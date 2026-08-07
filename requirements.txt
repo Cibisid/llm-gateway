@@ -18,3 +18,8 @@ PyYAML==6.0.3
 pytest==9.1.1
 pytest-asyncio==1.4.0
 httpx==0.28.1
+
+# --- MCP (Phase 3) ---
+# 2.x, not the 1.x line the build plan assumed: 2.0.0 is the current stable
+# release and implements the 2026-07-28 MCP spec; 1.x is maintenance-only.
+mcp==2.0.0

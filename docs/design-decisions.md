@@ -117,3 +117,63 @@ the bottom.
   contract absorbing vendor weirdness the router never sees.
 - **Azure requires all four settings before registering**, and a partial config
   logs a warning — that combination is a typo, not a deliberate opt-out.
+
+## Phase 3 — Tool calling + MCP (2026-08-07)
+
+- **`mcp` pinned to 2.0.0, resolving the fork flagged in Phase 0.** The build
+  plan assumed 1.x and suggested `<2`, but 2.0.0 is now the stable line, it
+  implements the 2026-07-28 spec the plan names as current, and 1.x is
+  maintenance-only. Building new work on a maintenance branch would be the
+  wrong call. The v2 API was verified by introspection and a live round trip
+  before any code was written against it — v2 renamed `inputSchema` to
+  `input_schema`, which a from-memory implementation would have got wrong.
+- **The Provider contract gained a neutral tool vocabulary** (`ToolSpec`,
+  `ToolCall`, `ToolOutcome`, `Turn`). The two vendors model tool calling
+  incompatibly — Anthropic returns parsed arguments and puts results in
+  `tool_result` blocks on a *user* message; OpenAI returns a JSON *string* and
+  uses a dedicated `role: "tool"` message per result. Letting either shape leak
+  upward would put vendor-shaped dicts in the orchestrator.
+- **`extra_turns` is separate from `request.messages`.** The tool conversation
+  is the gateway's, not the client's; keeping them apart means a plain call
+  needs neither argument and Phase 6's audit log can record the client's
+  request unchanged.
+- **Tool results are untrusted input.** They return inside `tool_result` blocks
+  and the system prompt states that tool output is data, never instructions.
+  Retrieved documents are a live prompt-injection surface into an agent that
+  can call tools.
+- **Hard iteration cap (4), and a capped run is labelled incomplete.** Without
+  a ceiling one request can spend unbounded money; presenting a truncated agent
+  run as a finished answer is how you ship something confidently wrong.
+- **Tool failures return to the model rather than raising**, and every error
+  names the valid alternatives. A model told only "unknown asset" invents one;
+  given the real list it retries correctly.
+- **The router will not fall back to a tool-incapable provider.** Silently
+  dropping the tools yields a confident ungrounded answer — the worst failure
+  mode available, because it looks like success.
+- **`OpenAICompatibleProvider` shared base extracted.** OpenAI and Azure speak
+  an identical wire format; Azure's whole difference is a one-line
+  `_upstream_model()` override. Writing the tool translation twice would mean
+  fixing every future bug twice.
+- **MCP client runs in-process, not over stdio.** The tools ship with the
+  gateway, so a subprocess would add failure modes (lifetime, zombies, stream
+  framing) for nothing, and in-process lets CI run real tool calls. The same
+  client takes a URL for a remote server, and `server.run()` still exposes
+  stdio for Claude Desktop.
+- **One MCP connection for the process lifetime**, not per request — the
+  initialize + discovery handshake is a round trip per message otherwise.
+- **Manuals retrieval is lexical (IDF-weighted overlap), not embeddings.**
+  Deterministic and dependency-free, so Phase 5 can assert exact retrieval in
+  CI and a failing eval means the code changed rather than a model drifting.
+  A production corpus would use a vector index behind the same tool interface.
+- **Telemetry data is static, not randomised**, so the eval harness can assert
+  exact values. A tool whose output changes per call cannot be graded.
+- **Asset status is derived from readings, never stored.** A status that can
+  disagree with its own readings is worse than no status.
+- **Tool descriptions say WHEN to call, not just what the tool does** — the
+  single biggest lever on correct tool selection. Docstrings and type hints are
+  the source, so the prompt-facing contract cannot drift from the signature.
+- **`use_mcp_tools` is opt-in, not automatic.** Tool calling costs extra model
+  round trips; a caller who wants a plain completion should not silently pay.
+- **Client-supplied `tools` still rejected with 400**, pointing at
+  `use_mcp_tools`. Accepting arbitrary client tool definitions is a separate
+  security question and is not in scope.

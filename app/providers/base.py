@@ -29,9 +29,73 @@ app/providers/registry.py. Do not touch app/router.py.
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 from app.schemas import ChatCompletionRequest
+
+
+# --- Tool calling (added in Phase 3) --------------------------------------
+#
+# Tool calling forced the only real extension to this contract so far. The
+# alternative — letting each adapter expose its vendor's tool format — would
+# have put vendor-shaped dicts into the orchestrator, which is exactly the
+# coupling base.py exists to prevent.
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """A tool offered to the model, in JSON Schema terms.
+
+    Deliberately identical in spirit to what MCP's `list_tools` returns, so the
+    MCP-to-provider conversion is a rename rather than a translation.
+    """
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """A model's request to run a tool.
+
+    `id` matters: a model may request several tools in one turn, and every
+    result must be matched back to the call that asked for it. Both vendors
+    reject a conversation where a call has no matching result.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolOutcome:
+    """The result of running one tool, on its way back to the model."""
+
+    tool_call_id: str
+    content: str
+    #: Tool failures are reported to the MODEL, not raised. A model told that a
+    #: tool errored will usually correct itself (fix an argument, try another
+    #: tool); an exception just ends the conversation.
+    is_error: bool = False
+
+
+@dataclass(frozen=True)
+class Turn:
+    """One provider-neutral conversation turn beyond the client's messages.
+
+    The tool loop appends these: an assistant turn carrying tool calls, then a
+    tool turn carrying their outcomes. Adapters translate them into whatever
+    their vendor's wire format demands.
+    """
+
+    role: Literal["assistant", "tool"]
+    text: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_outcomes: tuple[ToolOutcome, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -63,6 +127,10 @@ class ProviderResult:
     # "content_filter". Each adapter maps its vendor's terms onto this.
     finish_reason: str
 
+    #: Tools the model wants run before it can answer. Empty on a plain reply.
+    #: When non-empty, `finish_reason` is "tool_calls".
+    tool_calls: tuple[ToolCall, ...] = field(default_factory=tuple)
+
 
 class ProviderError(Exception):
     """Raised when an upstream call fails.
@@ -92,9 +160,25 @@ class Provider(abc.ABC):
     def supports(self, model: str) -> bool:
         return model in self.supported_models
 
+    #: Whether this adapter implements tool calling. The tool loop checks it so
+    #: an unsupported provider fails with a clear message rather than silently
+    #: ignoring the tools it was handed.
+    supports_tools: bool = False
+
     @abc.abstractmethod
-    async def chat(self, request: ChatCompletionRequest) -> ProviderResult:
+    async def chat(
+        self,
+        request: ChatCompletionRequest,
+        *,
+        tools: Sequence[ToolSpec] = (),
+        extra_turns: Sequence[Turn] = (),
+    ) -> ProviderResult:
         """Translate `request`, call the vendor, translate the reply back.
+
+        `extra_turns` are appended AFTER `request.messages` — they carry the
+        tool-calling conversation the gateway built up internally, which the
+        client never sees. Keeping them separate means the client's request
+        stays the client's request, and a plain call needs neither argument.
 
         Must raise `ProviderError` (never a vendor-specific exception) so the
         router can reason about failures without importing any vendor SDK.

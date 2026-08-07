@@ -45,10 +45,17 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app.pricing import compute_cost_usd, estimated_input_cost_usd
-from app.providers.base import Provider, ProviderError, ProviderResult
+from app.providers.base import (
+    Provider,
+    ProviderError,
+    ProviderResult,
+    ToolSpec,
+    Turn,
+)
 from app.schemas import ChatCompletionRequest
 
 logger = logging.getLogger(__name__)
@@ -221,9 +228,27 @@ class Router:
     # --- 3. execution with fallback ---------------------------------------
 
     async def route(
-        self, request: ChatCompletionRequest
+        self,
+        request: ChatCompletionRequest,
+        *,
+        tools: Sequence[ToolSpec] = (),
+        extra_turns: Sequence[Turn] = (),
     ) -> tuple[ProviderResult, RoutingDecision]:
         candidates = self.select_candidates(request.model)
+
+        if tools:
+            # A provider that cannot run tools must not be a fallback target
+            # here. Falling back to one would silently drop the tools and
+            # return a confident, ungrounded answer — the worst failure mode
+            # available, because it looks like success.
+            tool_capable = [c for c in candidates if c.provider.supports_tools]
+            if candidates and not tool_capable:
+                raise NoProviderAvailable(
+                    f"Model {request.model!r} is available, but no provider "
+                    "serving it supports tool calling."
+                )
+            candidates = tool_capable
+
         if not candidates:
             raise NoProviderAvailable(self._unavailable_message(request.model))
 
@@ -239,7 +264,9 @@ class Router:
             # upstream latency and not our own serialisation overhead.
             started = time.perf_counter()
             try:
-                result = await candidate.provider.chat(upstream_request)
+                result = await candidate.provider.chat(
+                    upstream_request, tools=tools, extra_turns=extra_turns
+                )
             except ProviderError as exc:
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 attempts.append(Attempt(str(candidate), ok=False, error=str(exc)))

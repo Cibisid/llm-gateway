@@ -22,9 +22,19 @@ to "what does it actually take to put one API in front of several vendors?"
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import anthropic
 
-from app.providers.base import Provider, ProviderError, ProviderResult, Usage
+from app.providers.base import (
+    Provider,
+    ProviderError,
+    ProviderResult,
+    ToolCall,
+    ToolSpec,
+    Turn,
+    Usage,
+)
 from app.schemas import ChatCompletionRequest
 
 # Anthropic requires max_tokens. This is the fallback when the client omits it.
@@ -43,13 +53,21 @@ _FINISH_REASON_MAP = {
 
 class AnthropicProvider(Provider):
     name = "anthropic"
+    supports_tools = True
 
     def __init__(self, api_key: str, models: tuple[str, ...]) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self.supported_models = models
 
-    async def chat(self, request: ChatCompletionRequest) -> ProviderResult:
+    async def chat(
+        self,
+        request: ChatCompletionRequest,
+        *,
+        tools: Sequence[ToolSpec] = (),
+        extra_turns: Sequence[Turn] = (),
+    ) -> ProviderResult:
         system_prompt, messages = _split_system_messages(request)
+        messages.extend(_render_turns(extra_turns))
 
         # Built explicitly rather than by spreading the request, so that adding
         # a field to the public schema can never silently forward something
@@ -61,6 +79,15 @@ class AnthropicProvider(Provider):
         }
         if system_prompt:
             kwargs["system"] = system_prompt
+        if tools:
+            kwargs["tools"] = [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                }
+                for t in tools
+            ]
 
         # request.temperature is intentionally NOT forwarded — see module docstring.
 
@@ -82,7 +109,62 @@ class AnthropicProvider(Provider):
                 output_tokens=response.usage.output_tokens,
             ),
             finish_reason=_FINISH_REASON_MAP.get(response.stop_reason or "", "stop"),
+            tool_calls=_extract_tool_calls(response),
         )
+
+
+def _render_turns(turns: Sequence[Turn]) -> list[dict]:
+    """Translate provider-neutral turns into Anthropic's content-block format.
+
+    Anthropic represents a tool call as a `tool_use` block on an ASSISTANT
+    message, and its result as a `tool_result` block on a USER message. That
+    second part is the counter-intuitive bit: results are user-role, not a
+    dedicated "tool" role as OpenAI has. Getting it wrong produces a 400 that
+    reads as if the conversation itself is malformed.
+    """
+    rendered: list[dict] = []
+    for turn in turns:
+        if turn.role == "assistant":
+            blocks: list[dict] = []
+            if turn.text:
+                blocks.append({"type": "text", "text": turn.text})
+            for call in turn.tool_calls:
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": call.id,
+                        "name": call.name,
+                        "input": call.arguments,
+                    }
+                )
+            if blocks:
+                rendered.append({"role": "assistant", "content": blocks})
+        else:
+            # All outcomes go in ONE user message. Splitting them across several
+            # messages is rejected, and trains the model out of parallel calls.
+            rendered.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": outcome.tool_call_id,
+                            "content": outcome.content,
+                            "is_error": outcome.is_error,
+                        }
+                        for outcome in turn.tool_outcomes
+                    ],
+                }
+            )
+    return rendered
+
+
+def _extract_tool_calls(response: anthropic.types.Message) -> tuple[ToolCall, ...]:
+    return tuple(
+        ToolCall(id=block.id, name=block.name, arguments=dict(block.input or {}))
+        for block in response.content
+        if block.type == "tool_use"
+    )
 
 
 def _split_system_messages(

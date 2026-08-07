@@ -48,6 +48,11 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     tools: list[dict] | None = None
 
+    # --- gateway extensions (not part of OpenAI's API) ---
+    # Opt-in rather than automatic: tool calling costs extra model round trips,
+    # so a caller who just wants a completion should not silently pay for them.
+    use_mcp_tools: bool = False
+
 
 class ResponseMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
@@ -80,6 +85,16 @@ class RoutingAttempt(BaseModel):
     error: str | None = None
 
 
+class ToolStepReport(BaseModel):
+    """One tool the gateway ran on the model's behalf."""
+
+    iteration: int
+    tool: str
+    arguments: dict
+    result: str
+    is_error: bool
+
+
 class GatewayMetadata(BaseModel):
     """Non-standard block describing what the gateway itself did.
 
@@ -101,6 +116,15 @@ class GatewayMetadata(BaseModel):
 
     fallback_occurred: bool = False
     attempts: list[RoutingAttempt] = Field(default_factory=list)
+
+    #: Every tool the gateway ran on the model's behalf, in order. Makes an
+    #: agentic answer auditable without server logs, and is what the Phase 5
+    #: eval grades tool-call correctness against.
+    tool_steps: list[ToolStepReport] = Field(default_factory=list)
+
+    #: True when the tool loop was stopped by its iteration cap. The answer is
+    #: then potentially incomplete, and says so.
+    hit_iteration_cap: bool = False
 
 
 class ChatCompletionResponse(BaseModel):

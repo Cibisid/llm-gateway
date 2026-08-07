@@ -15,9 +15,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 
 from app.config import MODEL_ALIASES, get_settings
-from app.providers.base import ProviderError
+from app.mcp_client import MCPToolbox
+from app.providers.base import ProviderError, ProviderResult
 from app.providers.registry import build_providers
 from app.router import NoProviderAvailable, Router
+from app.tool_loop import run_tool_loop
+from mcp_server.server import server as mcp_app
 from app.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -26,6 +29,7 @@ from app.schemas import (
     GatewayMetadata,
     ResponseMessage,
     RoutingAttempt,
+    ToolStepReport,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +46,12 @@ async def lifespan(app: FastAPI):
         strategy=settings.routing_strategy,
         aliases=MODEL_ALIASES,
     )
-    yield
+
+    # One MCP connection for the process lifetime. Reconnecting per request
+    # would pay the initialize + tool-discovery round trip on every message.
+    async with MCPToolbox(mcp_app) as toolbox:
+        app.state.toolbox = toolbox
+        yield
 
 
 app = FastAPI(
@@ -70,6 +79,7 @@ async def healthz(request: Request) -> dict:
         # Observed per-provider latency the router is currently steering on.
         # Empty until real traffic has been served.
         "observed_latency_ms": router.latency.snapshot(),
+        "mcp_tools": [s.name for s in request.app.state.toolbox.specs],
     }
 
 
@@ -87,13 +97,47 @@ async def chat_completions(
     if body.tools:
         raise HTTPException(
             status_code=400,
-            detail="Tool calling is not implemented in this phase (arrives in Phase 3).",
+            detail=(
+                "Client-supplied tool definitions are not supported. Set "
+                "`use_mcp_tools: true` to use the gateway's MCP tools instead."
+            ),
         )
 
     router: Router = request.app.state.router
+    toolbox: MCPToolbox = request.app.state.toolbox
+
+    tool_steps: list[ToolStepReport] = []
+    hit_cap = False
 
     try:
-        result, decision = await router.route(body)
+        if body.use_mcp_tools:
+            loop_result = await run_tool_loop(body, router, toolbox)
+            # The loop makes several model calls; report the summed usage and
+            # cost, not just those of the final one.
+            result = ProviderResult(
+                text=loop_result.text,
+                upstream_model=loop_result.decision.model
+                if loop_result.decision
+                else body.model,
+                usage=loop_result.usage,
+                finish_reason="stop",
+            )
+            decision = loop_result.decision
+            assert decision is not None
+            decision.cost_usd = loop_result.total_cost_usd
+            hit_cap = loop_result.hit_iteration_cap
+            tool_steps = [
+                ToolStepReport(
+                    iteration=s.iteration,
+                    tool=s.tool,
+                    arguments=s.arguments,
+                    result=s.result,
+                    is_error=s.is_error,
+                )
+                for s in loop_result.steps
+            ]
+        else:
+            result, decision = await router.route(body)
     except NoProviderAvailable as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProviderError as exc:
@@ -128,5 +172,7 @@ async def chat_completions(
                 RoutingAttempt(candidate=a.candidate, ok=a.ok, error=a.error)
                 for a in decision.attempts
             ],
+            tool_steps=tool_steps,
+            hit_iteration_cap=hit_cap,
         ),
     )
