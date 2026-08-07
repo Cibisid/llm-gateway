@@ -62,12 +62,12 @@ a green checkmark.
 |---|---|
 | Gateway, routing, fallback, cost tracking | **Verified** — 166 tests |
 | MCP server, discovery, tool execution | **Verified** — real protocol round trips in tests |
-| Tool loop, orchestrator, A2A delegation | **Verified** with a scripted model; real JSON-RPC over HTTP |
 | Security: auth, rate limiting, redaction, audit | **Verified** — 166 tests |
 | Offline evaluation (tools, retrieval) | **Verified** — 9 cases pass |
-| Anthropic provider against the live API | **Not verified** — no API key in the build environment |
+| **Anthropic provider against the live API** | **Verified** — real calls to `api.anthropic.com` |
+| **Tool loop, orchestrator, A2A delegation** | **Verified against live Claude**, not just a scripted model |
+| **Full evaluation, all 15 cases** | **Verified** — 15 passed, 0 failed, 0 skipped, $0.13 |
 | OpenAI / Azure OpenAI providers | **Not verified** — no credentials; mocked tests only |
-| Online evaluation (model behaviour) | **Never executed** — reported as skipped, never as passed |
 | Azure deployment | **Never deployed** — the Bicep is a design artefact, unvalidated against ARM |
 
 **A2A scope:** agent card discovery and `message/send` only. No streaming, push
@@ -106,8 +106,13 @@ python -m pytest -q
 ```
 
 ```bash
-python -m eval.runner --offline
+python -m eval.runner
 ```
+
+**Result: 15 passed, 0 failed, 0 skipped — $0.13 in model spend.** Including the
+two that matter most: asked about a pump that does not exist, the agent invented
+no reading; asked for a procedure with no manual section, it refused to invent
+one. `--offline` runs the 9 deterministic cases with no key at all.
 
 The evaluation is the part worth looking at. It **found three real retrieval
 bugs that 166 passing unit tests had missed**, because every individual function

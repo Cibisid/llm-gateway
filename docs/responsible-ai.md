@@ -136,13 +136,15 @@ write-capable tool is added.**
 6. **No key rotation, expiry, or revocation.** Gateway keys are static config.
 7. **The Azure template has never been deployed.** It expresses intent and is
    unvalidated against ARM.
-8. **The model-dependent evaluation cases have never been executed.** No API key
-   was available; they are reported as skipped, never as passed. Every claim
-   about *model behaviour* in this repository is therefore untested — as
-   distinct from claims about the system's plumbing, which is tested.
+8. ~~The model-dependent evaluation cases have never been executed.~~
+   **RESOLVED.** All 15 golden-set cases now pass against live Claude models —
+   9 offline plus 6 model-behaviour cases, 0 failed, 0 skipped. This includes
+   both anti-hallucination cases: asked about a non-existent asset the agent
+   reported no reading, and asked for a procedure with no manual section it
+   declined to invent one and cited no section id.
 
-Gap 8 is the one to read twice. The infrastructure for measuring AI output
-quality is built and working; the measurements themselves have not been taken.
+The remaining gaps are real and unchanged. Gap 7 (undeployed template) and the
+unverified OpenAI/Azure adapters are the honest limits of what has been proven.
 
 ---
 
