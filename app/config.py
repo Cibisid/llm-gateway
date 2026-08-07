@@ -28,9 +28,21 @@ class Settings(BaseSettings):
     azure_openai_api_version: str | None = None
     azure_openai_deployment: str | None = None
 
-    # Comma-separated client keys. Unused until Phase 6 — declared now so the
-    # variable name is stable in .env.example and deployment configs.
+    # Comma-separated client keys. Empty means the service refuses every
+    # request with 503 — it fails CLOSED rather than running unauthenticated.
     gateway_api_keys: str = ""
+
+    rate_limit_per_minute: int = 60
+
+    # OFF by default. Prompts routinely contain customer data and pasted
+    # credentials; logging them by default would push all of that into whatever
+    # log sink the deployment uses. When enabled, content is redacted and
+    # truncated — but the default is the control that actually protects it.
+    audit_log_content: bool = False
+
+    #: Where the JSON audit stream goes. Empty means stdout, so a container
+    #: platform collects it without the service needing a writable volume.
+    audit_log_path: str = ""
 
     log_level: str = "INFO"
 

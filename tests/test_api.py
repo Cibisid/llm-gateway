@@ -3,26 +3,20 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app.main import app
 from app.providers.base import ProviderError, ProviderResult, Usage
-from app.router import Router
-from tests.conftest import FakeProvider
+from tests.conftest import AUTH_HEADERS, FakeProvider
 
 
 @pytest.fixture
-def client_with(monkeypatch):
-    """Build a TestClient whose router uses the given fake providers."""
+def client_with(configured_app):
+    """Build a TestClient whose router uses the given fake providers.
 
-    def _build(providers):
-        # Patch registry construction so lifespan startup never reads real keys.
-        monkeypatch.setattr(
-            "app.main.build_providers", lambda settings: list(providers)
-        )
-        return TestClient(app)
-
-    return _build
+    Auth is genuinely configured rather than stubbed out, so every request
+    below must present a real bearer token — the security layer is exercised
+    by the whole file, not just the tests that name it.
+    """
+    return configured_app
 
 
 def test_successful_completion_returns_openai_shape(client_with):
@@ -39,6 +33,7 @@ def test_successful_completion_returns_openai_shape(client_with):
     with client_with([provider]) as client:
         response = client.post(
             "/v1/chat/completions",
+            headers=AUTH_HEADERS,
             json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
         )
 
@@ -68,6 +63,7 @@ def test_streaming_is_rejected_rather_than_silently_ignored(client_with):
     with client_with([FakeProvider("fake", ("test-model",))]) as client:
         response = client.post(
             "/v1/chat/completions",
+            headers=AUTH_HEADERS,
             json={
                 "model": "test-model",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -83,6 +79,7 @@ def test_tool_calling_is_rejected_until_phase_3(client_with):
     with client_with([FakeProvider("fake", ("test-model",))]) as client:
         response = client.post(
             "/v1/chat/completions",
+            headers=AUTH_HEADERS,
             json={
                 "model": "test-model",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -98,6 +95,7 @@ def test_unknown_model_is_404_not_502(client_with):
     with client_with([FakeProvider("fake", ("test-model",))]) as client:
         response = client.post(
             "/v1/chat/completions",
+            headers=AUTH_HEADERS,
             json={"model": "nope", "messages": [{"role": "user", "content": "hi"}]},
         )
 
@@ -114,6 +112,7 @@ def test_upstream_failure_is_502_not_500(client_with):
     with client_with([provider]) as client:
         response = client.post(
             "/v1/chat/completions",
+            headers=AUTH_HEADERS,
             json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
         )
 
@@ -124,6 +123,7 @@ def test_empty_messages_is_rejected_by_validation(client_with):
     with client_with([FakeProvider("fake", ("test-model",))]) as client:
         response = client.post(
             "/v1/chat/completions",
+            headers=AUTH_HEADERS,
             json={"model": "test-model", "messages": []},
         )
 
@@ -134,6 +134,7 @@ def test_unknown_fields_are_rejected_not_silently_dropped(client_with):
     with client_with([FakeProvider("fake", ("test-model",))]) as client:
         response = client.post(
             "/v1/chat/completions",
+            headers=AUTH_HEADERS,
             json={
                 "model": "test-model",
                 "messages": [{"role": "user", "content": "hi"}],

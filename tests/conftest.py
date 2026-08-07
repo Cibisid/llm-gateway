@@ -78,6 +78,41 @@ class FakeProvider(Provider):
         )
 
 
+#: A key used only by the test suite. Obviously fake so it can never be
+#: mistaken for a real credential if it leaks into output.
+TEST_API_KEY = "test-only-key-not-a-real-credential"
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_API_KEY}"}
+
+
+@pytest.fixture
+def configured_app(monkeypatch):
+    """Build a TestClient with auth configured and fake providers installed.
+
+    Sets GATEWAY_API_KEYS through the environment and clears the settings cache
+    so the app under test authenticates for real rather than having auth
+    stubbed out — the point is to exercise the security layer, not bypass it.
+    """
+    from fastapi.testclient import TestClient
+
+    def _build(providers, **env):
+        from app.config import get_settings
+
+        monkeypatch.setenv("GATEWAY_API_KEYS", TEST_API_KEY)
+        for name, value in env.items():
+            monkeypatch.setenv(name, str(value))
+        get_settings.cache_clear()
+        monkeypatch.setattr("app.main.build_providers", lambda settings: list(providers))
+
+        from app.main import app
+
+        return TestClient(app)
+
+    yield _build
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 def fake_provider() -> FakeProvider:
     return FakeProvider("fake", ("test-model",))

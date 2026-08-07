@@ -283,3 +283,52 @@ the bottom.
 
 All three are now regression tests. They were invisible to unit tests because
 every individual function worked correctly — which is the case for the harness.
+
+## Phase 6 — Security (2026-08-07)
+
+- **The service fails CLOSED.** No `GATEWAY_API_KEYS` means 503 on everything,
+  not open operation. An auth layer that disables itself when misconfigured is
+  worse than none, because the deployment looks protected.
+- **Auth runs before any provider call**, and tests assert the provider is
+  never called on rejection. The primary risk of an LLM gateway is financial;
+  auth that runs after the expensive part is decoration.
+- **`secrets.compare_digest`, iterating all candidates with no early exit.** A
+  plain `==`/`in` short-circuits at the first differing byte, leaking the key
+  prefix through response timing.
+- **Keys are logged by 12-char SHA-256 fingerprint, never by value** — enough
+  to correlate a client, useless to authenticate with. Failed attempts log the
+  fingerprint of the *presented* value, so probing is visible without writing a
+  credential anywhere.
+- **Content logging is OFF by default**, and when on, content is **redacted
+  then truncated** — truncating first could split a pattern and leave a partial
+  credential. Exactly one function can put content into the audit log, so a
+  second path cannot be added without the check.
+- **Redaction is documented as best-effort, with a test asserting its
+  limitation.** It is regex and will miss names and unusual formats. The real
+  control is not logging content; redaction is defence in depth under it.
+- **Redaction pattern order is load-bearing**: the loose phone pattern matches
+  dot-separated digit runs, so IP must be masked first or an IP is labelled
+  `[PHONE]` — still redacted, but a misleading audit label is its own bug.
+- **`/healthz` stays unauthenticated.** A liveness probe requiring a credential
+  fails during a credential outage. It exposes capability only, and a test
+  asserts no key material appears in its output.
+- **The A2A endpoint IS authenticated** — it invokes a model, so it spends
+  money and is not a back door. The agent card stays open because A2A discovery
+  documents are meant to be publicly readable and carry no secrets.
+- **The orchestrator forwards the caller's credential to the specialist**
+  rather than holding a privileged internal key. This preserves attribution:
+  the delegated call is audited under the original caller, not a service
+  identity that obscures who spent the money.
+- **Failures are audited.** A trail recording only successes cannot answer "was
+  this ever refused?", which is what a compliance review asks.
+- **The audit logger does not propagate**, so its stream cannot be reformatted
+  or filtered by the application logger's config. Consequence: pytest's
+  `caplog` cannot see it, and the tests attach a handler to the real logger
+  instead of working around the design.
+- **Fixed-window rate limiting, not a token bucket.** Trivial to explain and
+  verify; its one weakness (up to 2x across a window boundary) is acceptable
+  when the goal is bounding runaway spend rather than smoothing traffic.
+- **Rate limiting is per-process and documented as such.** N replicas permit N
+  times the limit; a real deployment puts this in Redis or at the ingress.
+- **No key rotation, expiry, or revocation.** Keys are static config. Stated as
+  a limitation rather than implied to be complete.

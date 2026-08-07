@@ -23,7 +23,7 @@ from app.providers.base import ProviderResult, ToolCall, Usage
 from app.router import Router
 from app.schemas import ChatCompletionRequest, ChatMessage
 from mcp_server.server import server as mcp_app
-from tests.conftest import FakeProvider
+from tests.conftest import AUTH_HEADERS, FakeProvider
 
 
 def _request(text: str = "Is pump 3 overheating and why?") -> ChatCompletionRequest:
@@ -334,14 +334,16 @@ def test_non_text_parts_are_skipped_not_stringified():
 
 
 @pytest.fixture
-def a2a_client(monkeypatch):
-    """A TestClient whose specialist endpoint is backed by a fake model."""
+def a2a_client(configured_app):
+    """A TestClient whose specialist endpoint is backed by a fake model.
+
+    Auth is really configured, so the A2A endpoint is exercised as a protected
+    endpoint — which it must be, since it invokes a model and therefore spends
+    money.
+    """
 
     def _build(provider: FakeProvider):
-        monkeypatch.setattr("app.main.build_providers", lambda settings: [provider])
-        from app.main import app
-
-        return TestClient(app)
+        return configured_app([provider])
 
     return _build
 
@@ -363,7 +365,7 @@ def test_specialist_answers_a_real_json_rpc_message_send(a2a_client):
     )
     with a2a_client(provider) as client:
         response = client.post(
-            "/a2a/specialist", json=build_send_request("Pump 3 is at 87.4 degC. Why?")
+            "/a2a/specialist", headers=AUTH_HEADERS, json=build_send_request("Pump 3 is at 87.4 degC. Why?")
         )
 
     body = response.json()
@@ -375,7 +377,7 @@ def test_specialist_uses_a_cheaper_model_tier_than_the_orchestrator(a2a_client):
     """Delegated sub-analysis should not cost more than doing the work inline."""
     provider = FakeProvider("fake", ("claude-haiku-4-5",), result=_answer("x"))
     with a2a_client(provider) as client:
-        client.post("/a2a/specialist", json=build_send_request("why?"))
+        client.post("/a2a/specialist", headers=AUTH_HEADERS, json=build_send_request("why?"))
 
     assert provider.calls[0].model == "claude-haiku-4-5"
 
@@ -387,6 +389,7 @@ def test_unknown_jsonrpc_method_returns_an_error_object_not_an_http_error(a2a_cl
     with a2a_client(provider) as client:
         response = client.post(
             "/a2a/specialist",
+            headers=AUTH_HEADERS,
             json={"jsonrpc": "2.0", "id": "1", "method": "message/stream"},
         )
 
@@ -399,6 +402,7 @@ def test_message_with_no_text_part_is_an_invalid_params_error(a2a_client):
     with a2a_client(provider) as client:
         response = client.post(
             "/a2a/specialist",
+            headers=AUTH_HEADERS,
             json={
                 "jsonrpc": "2.0",
                 "id": "1",
@@ -428,6 +432,7 @@ def test_orchestrator_delegates_over_real_http_to_the_specialist(a2a_client):
     with a2a_client(provider) as client:
         response = client.post(
             "/v1/agent",
+            headers=AUTH_HEADERS,
             json={
                 "model": "test-model",
                 "messages": [{"role": "user", "content": "Why is pump 3 hot?"}],

@@ -141,6 +141,7 @@ class Orchestrator:
         *,
         specialist_url: str,
         http_client=None,
+        auth_header: str | None = None,
         max_steps: int = DEFAULT_MAX_STEPS,
     ) -> None:
         self._router = router
@@ -149,6 +150,13 @@ class Orchestrator:
         # Injected so tests can drive a real A2A round trip against the app
         # itself rather than mocking the protocol they are meant to exercise.
         self._http = http_client
+        # The caller's credential is forwarded to the specialist rather than
+        # the orchestrator holding a privileged internal key. Two reasons: the
+        # specialist is a model-invoking endpoint and must not be reachable
+        # unauthenticated, and forwarding preserves attribution — the delegated
+        # call appears in the audit log under the ORIGINAL caller's key, not a
+        # service identity that hides who really spent the money.
+        self._auth_header = auth_header
         self._max_steps = max_steps
 
     # --- stage 1: PLAN -----------------------------------------------------
@@ -288,8 +296,11 @@ class Orchestrator:
             )
 
         payload = build_send_request(question)
+        headers = {"Authorization": self._auth_header} if self._auth_header else {}
         try:
-            response = await self._http.post(self._specialist_url, json=payload)
+            response = await self._http.post(
+                self._specialist_url, json=payload, headers=headers
+            )
             body = response.json()
         except Exception as exc:  # noqa: BLE001 - see docstring
             logger.exception("A2A delegation failed")
