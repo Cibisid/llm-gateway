@@ -1,0 +1,127 @@
+name: CI
+
+# Runs on every push and PR. The eval harness runs alongside the unit tests,
+# which is the point of Phase 5: a change that breaks the SYSTEM's behaviour
+# should fail the build even when every unit test still passes.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    name: Tests and evaluation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m pytest -q
+
+      # The offline evaluation needs no API key, so it runs on every push from
+      # anyone, including forks. This is the whole reason the harness splits
+      # offline from online: a check that only runs where secrets exist does
+      # not protect a pull request.
+      - name: Run offline evaluation
+        run: python -m eval.runner --offline
+
+      # The model-dependent cases only run where a key is configured. On a fork
+      # the secret is absent and this step is skipped — never silently passed.
+      - name: Run full evaluation (model cases)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY not configured — model evaluation cases were NOT run."
+            exit 0
+          fi
+          # --require-online turns a skip into a failure here: if we got this
+          # far a key exists, so a skipped model case means the checks quietly
+          # stopped running, which is exactly the silent failure to catch.
+          python -m eval.runner --require-online
+
+  security:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a secret committed and later removed is still in the
+          # history, still leaked, and still needs rotating.
+          fetch-depth: 0
+
+      - name: Fail if .env is tracked
+        run: |
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env is tracked by git"
+            exit 1
+          fi
+          echo ".env is not tracked"
+
+      - name: Scan history for secret-shaped strings
+        run: |
+          # Deliberately narrow — matches real provider key formats rather than
+          # the word "key", so it fails on leaks instead of on documentation.
+          if git grep -nIE 'sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16}' $(git rev-list --all) -- . ; then
+            echo "::error::A secret-shaped string is present in git history"
+            exit 1
+          fi
+          echo "No secret-shaped strings found in history"
+
+  container:
+    name: Container build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -f infra/Dockerfile -t llm-gateway:${{ github.sha }} .
+
+      # Building proves it compiles; starting it proves it actually serves.
+      # An image that builds and then crash-loops passes the first check.
+      - name: Verify the container starts and serves /healthz
+        run: |
+          docker run -d --name gateway -p 8000:8000 \
+            -e GATEWAY_API_KEYS=ci-smoke-test-key \
+            llm-gateway:${{ github.sha }}
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/healthz > /dev/null 2>&1; then
+              echo "Gateway is serving:"
+              curl -s http://localhost:8000/healthz
+              docker rm -f gateway
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Container did not become healthy in 60s"
+          docker logs gateway
+          docker rm -f gateway
+          exit 1
+
+      - name: Verify the image runs as a non-root user
+        run: |
+          user=$(docker run --rm --entrypoint id llm-gateway:${{ github.sha }} -un)
+          echo "Container user: $user"
+          if [ "$user" = "root" ]; then
+            echo "::error::Image runs as root"
+            exit 1
+          fi

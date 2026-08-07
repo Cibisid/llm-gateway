@@ -332,3 +332,67 @@ every individual function worked correctly — which is the case for the harness
   times the limit; a real deployment puts this in Redis or at the ingress.
 - **No key rotation, expiry, or revocation.** Keys are static config. Stated as
   a limitation rather than implied to be complete.
+
+## Phase 7 — Container, IaC, CI (2026-08-07)
+
+- **Multi-stage Docker build.** The runtime image carries no pip, wheels, or
+  compiler — attack surface and size a running service has no use for.
+- **Non-root container user, asserted in CI.** A root process compromised
+  through a dependency has root inside the container, a much shorter path to
+  host escape. The check is `docker run --entrypoint id`, not trust.
+- **Image pins Python 3.12 while local dev runs 3.14.** 3.12 has uniformly
+  available wheels for this dependency set, so the image builds without a
+  compiler. The code supports both.
+- **`.dockerignore` excludes `.env` explicitly.** Not redundant with
+  `.gitignore`: git and Docker are separate systems, and excluding a file from
+  version control does nothing for the build context.
+- **No secret in the image, the Bicep template, or deployment history.**
+  Secrets live in Key Vault and are read through a user-assigned managed
+  identity. Deployment history is readable by anyone with reader access to the
+  resource group — a routinely forgotten leak path.
+- **User-assigned rather than system-assigned identity.** It outlives the
+  Container App, so the Key Vault role assignment survives delete-and-recreate;
+  a system-assigned identity mints a new principal each time and the grant must
+  be re-applied.
+- **`Key Vault Secrets User`, not Contributor or Officer.** The app reads secret
+  values and does nothing else; granting more is how a compromised container
+  becomes a compromised vault.
+- **The template does not create the secrets.** Putting a value in a template
+  puts it in deployment history; they are created out of band, once.
+- **`AUDIT_LOG_CONTENT` pinned false in Azure.** Prompt text would otherwise
+  land in Log Analytics under its retention and access model.
+- **CI runs the offline eval on every push including forks**, and uses
+  `--require-online` where a key exists so a skipped model case fails the build.
+  A check that only runs where secrets exist does not protect a pull request.
+- **The secret scan covers all of git history**, not the working tree. A secret
+  committed and later removed is still leaked and still needs rotating.
+- **CI runs the container, not just builds it.** An image that builds and then
+  crash-loops passes a build-only check.
+- **Bicep is unvalidated and the service is not deployed.** No Azure CLI, no
+  subscription, and provisioning billable resources unasked would be wrong. The
+  template is labelled a design artefact everywhere it is referenced.
+- **Local Docker build unverified**: Docker Desktop's Linux engine did not start
+  in this environment. Covered by the CI `container` job on first push.
+
+## Phase 8 — Responsible AI + README (2026-08-07)
+
+- **Every responsible-AI claim points at a file.** A mapping that cannot be
+  checked against code is a marketing document.
+- **The EU AI Act classification states the trigger that would change it.** Not
+  high-risk as built; wiring the output into equipment control or a
+  safety-instrumented system would make it so — a deployment decision, not a
+  code change, and nothing in the code prevents it.
+- **The gaps list is part of the document, not an appendix.** Unmeasured bias,
+  no enforced human-in-the-loop, no output content filter, no model cards,
+  per-process rate limits, no key rotation, undeployed template, and — most
+  importantly — model-behaviour evaluation never executed.
+- **Article 14 claim deliberately narrowed.** The plan is *exposed*, which makes
+  oversight possible; no approval gate is *enforced*. The hook exists, the
+  control does not, and "supports human oversight" is easy to overstate.
+- **Prompt injection described as mitigated, not prevented.** The realistic
+  control is that every tool is read-only, so the worst outcome is a misleading
+  answer rather than an action — a property that stops holding the moment a
+  write-capable tool is added.
+- **The README leads with a status table separating verified from unverified.**
+  Several capabilities have never run against a live service; saying so is more
+  useful than a green checkmark.

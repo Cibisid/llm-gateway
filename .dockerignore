@@ -1,0 +1,35 @@
+# Keep secrets and local state out of the build context entirely.
+#
+# This matters more than it looks: anything in the build context can end up in
+# an image layer, and layers are readable by anyone who can pull the image.
+# .env is gitignored, but git and Docker are separate systems — excluding it
+# from git does nothing for the build context.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+tests/
+docs/
+*.md
+!README.md
+
+eval/results/
+*.log
+.vscode/
+.idea/
+.DS_Store
