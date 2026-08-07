@@ -237,3 +237,49 @@ the bottom.
   the specialist to another host must be a URL change and nothing more.
 - **A failed consult degrades rather than 500s.** Losing an answer the agent
   could partly give, because an optional consult failed, is the wrong trade.
+
+## Phase 5 — Evaluation harness (2026-08-07)
+
+- **Every online case must carry at least one DECIDABLE check.** You cannot
+  assert equality against model output; a suite that fails on rewording gets
+  muted, and a muted eval is worse than none because it produces confident
+  green. A meta-test (`test_every_online_case_has_at_least_one_decidable_check`)
+  enforces the rule — and caught one of my own cases violating it.
+- **`forbids` is the primary hallucination check.** Asserting that an answer
+  about a non-existent asset contains no "degC", or that an answer about
+  equipment with no manual entry cites no section id, is fully decidable, needs
+  no model, and catches the failure that actually matters.
+- **Similarity is labelled LEXICAL, not semantic**, with a test asserting its
+  weakness (a contradiction reusing the reference's words scores >0.5). It is a
+  floor against answer collapse; the judge does semantics. Cases using it always
+  also carry a judge rubric.
+- **Tool-call checking is subset, not exact-set.** An agent that checks one
+  extra thing has not regressed; requiring an exact call set fails on harmless
+  variation and trains people to ignore the suite.
+- **Skips are reported as SKIP, never PASS**, and `--require-online` makes a
+  skip fatal for pipelines that do have a key. Counting a skip as a pass is how
+  an eval becomes decorative.
+- **The judge FAILS on unreachable, unparseable, or errored verdicts.** An eval
+  that goes green when its grader is broken is worse than no eval. Both paths
+  are tested.
+- **The judge is told to ignore instructions inside the answer under test.** The
+  grader is a prompt-injection target too.
+- **The judge runs on a cheap tier.** Grading against an explicit rubric is far
+  easier than the graded task, and an expensive suite stops being run.
+- **`ERROR` is tracked separately from `FAIL`** — the system breaking and the
+  system behaving wrongly want different investigation.
+
+### Retrieval bugs the harness found (109 unit tests had not)
+
+- **Stopword filtering added.** IDF assumes rare ⇒ informative; "do" appeared in
+  one section, so it scored as highly informative and "how do I restart a pump"
+  matched the section saying "Do not restart".
+- **Minimum query-coverage threshold added.** One incidental term match
+  ("alignment" in an otherwise unrelated query) was returned as a hit, inviting
+  the model to ground an answer in an irrelevant section.
+- **Sub-linear TF and a title weight added.** Set-based scoring made a section
+  *titled* "restart procedure" tie with one mentioning restart once in passing,
+  and the tie broke alphabetically on section id.
+
+All three are now regression tests. They were invisible to unit tests because
+every individual function worked correctly — which is the case for the harness.

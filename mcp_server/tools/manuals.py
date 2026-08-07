@@ -105,9 +105,35 @@ CORPUS: tuple[Section, ...] = (
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 
+# Function words carry no topical signal, and IDF actively MISRANKS them in a
+# corpus this small: "do" appears in exactly one section, so IDF scores it as
+# highly informative and a query containing "how do I..." gets pulled toward
+# whichever section happens to say "Do not". Found by the Phase 5 eval
+# (retrieval-restart-procedure), which is precisely the class of bug unit tests
+# do not catch — every individual function still worked.
+_STOPWORDS = frozenset(
+    """
+    a an and are as at be been before but by can do does for from had has have
+    how i if in into is it its may must no not of on or should so than that the
+    their then there these they this to until up was were what when where which
+    while who why will with would you your
+    """.split()
+)
+
+#: A hit must match at least this fraction of the query's content words. One
+#: incidental term overlap ("alignment" in an otherwise unrelated query) is not
+#: a match, and returning it as one invites the model to ground an answer in an
+#: irrelevant section — worse than returning nothing.
+MIN_QUERY_COVERAGE = 0.34
+
 
 def _tokenize(text: str) -> list[str]:
     return _TOKEN.findall(text.lower())
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Tokens that carry topical meaning — stopwords removed."""
+    return {t for t in _tokenize(text) if t not in _STOPWORDS}
 
 
 # Document frequency, computed once at import. Common words ("the", "pump")
@@ -115,18 +141,49 @@ def _tokenize(text: str) -> list[str]:
 # every query matches every section about pumps.
 _DOC_FREQ: Counter[str] = Counter()
 for _section in CORPUS:
-    for _token in set(_tokenize(f"{_section.title} {_section.text}")):
+    for _token in _content_tokens(f"{_section.title} {_section.text}"):
         _DOC_FREQ[_token] += 1
 
 
-def _score(query_tokens: list[str], section: Section) -> float:
-    section_tokens = set(_tokenize(f"{section.title} {section.text}"))
-    score = 0.0
-    for token in set(query_tokens):
-        if token in section_tokens:
-            # Classic IDF: rarer terms contribute more.
-            score += math.log(len(CORPUS) / (1 + _DOC_FREQ[token])) + 1.0
-    return score
+#: How much more a title match counts than a body match. A section titled
+#: "Feedwater pump restart procedure" is *about* restarting; one that mentions
+#: restarting in a closing sentence is not. Without this, the two are
+#: indistinguishable and ranking falls back to alphabetical order — which is
+#: exactly the bug the Phase 5 eval caught (retrieval-restart-procedure).
+_TITLE_WEIGHT = 3.0
+
+
+def _score(query_tokens: set[str], section: Section) -> tuple[float, float]:
+    """Return (relevance, coverage) for one section.
+
+    Coverage — the fraction of the query's content words this section matches —
+    is tracked separately from relevance because they answer different
+    questions. Relevance ranks the hits; coverage decides whether something is
+    a hit at all. A section that matches one rare word scores respectably on
+    relevance while covering almost none of what was asked.
+
+    Relevance combines three signals, all of which the eval showed are needed:
+      IDF          rare terms are more informative than common ones
+      sub-linear TF  repeated mentions matter, but the tenth is not worth the
+                     first — hence log, not a raw count
+      title boost  what a section is titled beats what it mentions in passing
+    """
+    title_counts = Counter(
+        t for t in _tokenize(section.title) if t not in _STOPWORDS
+    )
+    body_counts = Counter(t for t in _tokenize(section.text) if t not in _STOPWORDS)
+
+    matched = query_tokens & (set(title_counts) | set(body_counts))
+    if not matched:
+        return 0.0, 0.0
+
+    relevance = 0.0
+    for token in matched:
+        idf = math.log(len(CORPUS) / (1 + _DOC_FREQ[token])) + 1.0
+        weighted_count = _TITLE_WEIGHT * title_counts[token] + body_counts[token]
+        relevance += idf * (1.0 + math.log(weighted_count))
+
+    return relevance, len(matched) / len(query_tokens)
 
 
 def search_manuals(query: str, max_results: int = 3) -> dict:
@@ -135,13 +192,21 @@ def search_manuals(query: str, max_results: int = 3) -> dict:
     Every result carries its `section_id` so the model can cite it and a human
     can check it. Grounding without traceability is just a nicer-sounding guess.
     """
-    tokens = _tokenize(query)
+    tokens = _content_tokens(query)
     if not tokens:
-        return {"query": query, "results": [], "note": "Empty query."}
+        return {
+            "query": query,
+            "results": [],
+            "note": "Query contained no searchable terms.",
+        }
 
-    scored = [(s, _score(tokens, s)) for s in CORPUS]
+    scored = [(s, *_score(tokens, s)) for s in CORPUS]
     hits = sorted(
-        [(s, score) for s, score in scored if score > 0],
+        [
+            (s, relevance)
+            for s, relevance, coverage in scored
+            if relevance > 0 and coverage >= MIN_QUERY_COVERAGE
+        ],
         key=lambda pair: (-pair[1], pair[0].section_id),
     )[: max(1, min(max_results, 10))]
 

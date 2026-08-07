@@ -1,0 +1,181 @@
+# Golden set — the behaviours this system is expected to hold.
+#
+# Every case declares which CHECKS apply to it. Checks come in two families:
+#
+#   OFFLINE  (tools, retrieval, contains/forbids over deterministic output)
+#            No model, no API key. Always runs, including in CI on a fork.
+#
+#   ONLINE   (tool_calls, similarity, judge)
+#            Needs a real model, so needs ANTHROPIC_API_KEY. Skipped loudly
+#            when absent — never silently passed.
+#
+# The split is the point. A regression in retrieval or tool behaviour is caught
+# on every push by anyone; a regression in model behaviour is caught wherever a
+# key exists. Reporting a skipped check as a pass would make the whole suite
+# decorative.
+
+cases:
+  # --- OFFLINE: the tools themselves ------------------------------------
+  - id: telemetry-breach-detected
+    kind: offline_tool
+    description: A reading above its limit must be flagged, and status derived.
+    tool: get_telemetry
+    arguments: {asset_id: pump-3}
+    expect:
+      json_path_equals:
+        status: warning
+        readings.temperature.value: 87.4
+        readings.temperature.breached: true
+
+  - id: telemetry-two-breaches-escalate
+    kind: offline_tool
+    description: Two breaches escalate warning to alarm.
+    tool: get_telemetry
+    arguments: {asset_id: compressor-2}
+    expect:
+      json_path_equals:
+        status: alarm
+
+  - id: telemetry-healthy-is-normal
+    kind: offline_tool
+    tool: get_telemetry
+    arguments: {asset_id: pump-1}
+    expect:
+      json_path_equals:
+        status: normal
+
+  - id: telemetry-unknown-asset-lists-alternatives
+    kind: offline_tool
+    description: >
+      An unknown asset must return the valid ids. A model told only "unknown"
+      invents one; given the real list it retries correctly.
+    tool: get_telemetry
+    arguments: {asset_id: pump-99}
+    expect:
+      contains: ["pump-3", "pump-1"]
+
+  # --- OFFLINE: retrieval quality ---------------------------------------
+  - id: retrieval-pump-temperature
+    kind: offline_retrieval
+    description: The bearing-temperature query must rank its own section first.
+    query: pump bearing temperature limit
+    expect:
+      top_section: PMP-4.2
+
+  - id: retrieval-pump-vibration
+    kind: offline_retrieval
+    query: pump vibration limit mm/s
+    expect:
+      top_section: PMP-4.5
+
+  - id: retrieval-compressor-not-pump
+    kind: offline_retrieval
+    description: >
+      IDF weighting must keep compressor queries off pump documents. This is
+      the check that fails first if the scoring is naive term-frequency.
+    query: compressor intercooler fouling
+    expect:
+      top_section: CMP-2.3
+
+  - id: retrieval-restart-procedure
+    kind: offline_retrieval
+    query: how do I restart a feedwater pump
+    expect:
+      top_section: PMP-7.1
+
+  - id: retrieval-no-match-admits-it
+    kind: offline_retrieval
+    description: An unmatched query must return nothing, not a bad guess.
+    query: quantum flux capacitor alignment
+    expect:
+      empty: true
+
+  # --- ONLINE: does the model call the right tool? ----------------------
+  - id: agent-telemetry-question-calls-telemetry
+    kind: online_agent
+    prompt: What is the current temperature of pump 3?
+    expect:
+      tool_calls: [get_telemetry]
+      tool_arguments:
+        get_telemetry: {asset_id: pump-3}
+      contains: ["87.4"]
+
+  - id: agent-limit-question-consults-manuals
+    kind: online_agent
+    description: >
+      Operating limits must be quoted from the manuals with a citation, never
+      recalled from the model's own weights.
+    prompt: What is the vibration limit for a feedwater pump?
+    expect:
+      tool_calls: [search_manuals]
+      contains: ["7.1"]
+      judge: >
+        The answer states the feedwater pump vibration limit as 7.1 mm/s and
+        cites a manual section id (a code like PMP-4.5). It must not present
+        the limit as general knowledge without a citation.
+
+  - id: agent-multi-step-grounded-diagnosis
+    kind: online_agent
+    description: The flagship case — telemetry AND manuals, then a grounded answer.
+    prompt: >
+      Is pump 3 running too hot, and what does the manual say I should do
+      about it?
+    expect:
+      tool_calls: [get_telemetry, search_manuals]
+      contains: ["87.4", "80"]
+      similarity_to: >
+        Pump 3 bearing temperature is 87.4 degC, above the 80 degC limit from
+        manual section PMP-4.2. The manual says to reduce load to 60 percent
+        and verify the lubrication oil level, and to shut down immediately if
+        temperature exceeds 95 degC.
+      similarity_threshold: 0.25
+      judge: >
+        The answer reports pump 3's actual temperature (87.4 degC), states it
+        exceeds the 80 degC limit, and gives the manual's remedial action
+        (reduce load and check lubrication). It cites a manual section id.
+
+  - id: agent-unknown-asset-does-not-hallucinate
+    kind: online_agent
+    description: >
+      The most important behavioural check in the set. An agent that invents
+      readings for equipment that does not exist is worse than one that fails.
+    prompt: What is the temperature of pump 47?
+    expect:
+      forbids: ["degC", "°C"]
+      judge: >
+        The answer states that pump 47 is not a known asset. It MUST NOT report
+        any temperature value or reading for pump 47. Mentioning which assets
+        do exist is good. Any invented reading is an automatic fail.
+
+  - id: agent-refuses-to-guess-missing-procedure
+    kind: online_agent
+    description: >
+      No manual section covers this, so citing ANY section id would be a
+      fabricated citation — which makes the check fully decidable rather than
+      leaving the case resting on the judge alone.
+    prompt: What is the procedure for recalibrating the flux capacitor?
+    expect:
+      forbids: ["PMP-", "CMP-", "GEN-"]
+      judge: >
+        The answer states that no manual section covers this, or that the
+        equipment is unknown. It must not invent a procedure. Suggesting the
+        user consult documentation not in the system is acceptable.
+
+  # --- ONLINE: delegation ------------------------------------------------
+  - id: agent-delegates-diagnosis-to-specialist
+    kind: online_agent
+    endpoint: agent
+    description: >
+      A "why" question needs judgement, not lookup, so the orchestrator should
+      gather evidence and then consult the specialist.
+    prompt: >
+      Pump 3 is running hot. Why might that be happening, and what should I
+      check first?
+    expect:
+      tool_calls: [get_telemetry]
+      delegates: true
+      judge: >
+        The answer identifies a plausible failure mode for a hot pump bearing
+        (such as lubrication failure, misalignment, or bearing wear) and names
+        a specific next diagnostic check. It should reference the actual
+        temperature reading rather than speaking generically.
