@@ -177,3 +177,63 @@ the bottom.
 - **Client-supplied `tools` still rejected with 400**, pointing at
   `use_mcp_tools`. Accepting arbitrary client tool definitions is a separate
   security question and is not in scope.
+
+## Phase 4 — Orchestration + A2A (2026-08-07)
+
+- **Neither Microsoft Agent Framework nor Pydantic AI was adopted; the loop is
+  implemented directly.** This departs from the build plan, deliberately. Every
+  model call here goes through the gateway's Router, which is where fallback,
+  cost tracking, and latency ranking live. A framework brings its own model
+  clients, so adopting one means either bypassing the router — discarding the
+  thing this project exists to demonstrate — or writing an adapter larger than
+  the ~120-line loop it replaces. The trade-off would flip if the requirement
+  were multi-agent conversation patterns (group chat, hand-off graphs) or
+  durable workflow state across restarts.
+- **Delegation is exposed as a tool, not a branch.** `consult_reliability_
+  specialist` sits in the same flat list as the MCP tools, so the model decides
+  to delegate from the tool description rather than from a hardcoded condition,
+  and the HTTP/JSON-RPC mechanism is invisible to it. That invisibility is what
+  A2A buys.
+- **A separate `/v1/agent` route rather than a flag on `/v1/chat/completions`.**
+  An agent run has different cost, latency, and failure characteristics from a
+  completion; opting in should mean choosing a different endpoint.
+- **The planner is given no tools.** Planning is deciding what to do, not doing
+  it; offering tools at that stage invites the model to start executing.
+- **The plan is advisory, not a script.** The loop may deviate when an
+  observation invalidates a step — a plan that cannot be departed from turns a
+  model into a bad workflow engine. Both the plan and the actual steps are
+  reported so deviation is visible.
+- **The plan is returned to the caller before execution.** This is its main
+  justification over pure reaction: it is where a human approval gate would sit
+  for irreversible actions, and it makes intent auditable without logs.
+- **An unparseable plan is flagged, not fatal** (`plan_malformed`). A degraded
+  start is not a failed request, but displaying a plan that did not guide the
+  run would be worse than displaying none. The parser tolerates fenced blocks
+  and surrounding prose, because failing a run over formatting is failing over
+  the wrong thing.
+- **Planning cost is counted in the agent's total.** The plan is a real model
+  call; omitting it would under-report what the agent cost.
+- **The specialist is an agent, not a tool, because it returns judgement.** Own
+  system prompt, own model tier, no tool access. It routes through the same
+  Router, so delegated calls are cost-tracked like any other.
+- **The specialist runs on a deliberately cheaper tier** (`claude-haiku-4-5`).
+  Bounded sub-analysis should not cost more than doing the work inline.
+- **A2A implemented directly rather than via `a2a-sdk`.** The wire format is
+  small and the protocol shape — cards, skills, JSON-RPC tasks, artifacts vs
+  status messages — is the part worth demonstrating; an SDK would hide it, and
+  could not be verified end to end in this environment.
+- **Scope is stated precisely: card discovery + `message/send` only.** No
+  streaming, push notifications, multi-turn task states, or cancellation. The
+  agent card advertises `streaming: false` rather than claiming a default it
+  does not honour. This is not a compliant A2A implementation and the README
+  says so.
+- **The reply is an artifact, not a status message.** In A2A, artifacts are the
+  durable output of work; status messages are progress commentary.
+- **JSON-RPC errors return HTTP 200 with an error object.** An HTTP error code
+  would assert that the transport failed, which is a different claim from the
+  method failing.
+- **The orchestrator reaches the specialist over HTTP despite co-location**, via
+  a configurable base URL. Co-location is an accident of deployment, and moving
+  the specialist to another host must be a URL change and nothing more.
+- **A failed consult degrades rather than 500s.** Losing an answer the agent
+  could partly give, because an optional consult failed, is the wrong trade.

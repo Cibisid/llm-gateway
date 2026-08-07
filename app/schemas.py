@@ -126,6 +126,19 @@ class GatewayMetadata(BaseModel):
     #: then potentially incomplete, and says so.
     hit_iteration_cap: bool = False
 
+    # --- orchestrator fields (populated by /v1/agent only) ---
+    #: The plan the agent wrote before acting. Surfaced so the intended course
+    #: of action is inspectable, and so a human approval gate has something to
+    #: gate on.
+    plan_goal: str | None = None
+    plan_steps: list[str] = Field(default_factory=list)
+    #: True when the planner's output could not be parsed. The run still
+    #: proceeded, but the plan shown did not guide it — say so rather than
+    #: display a plan that was not actually followed.
+    plan_malformed: bool = False
+    #: True when work was delegated to the specialist agent over A2A.
+    delegated_to_agent: bool = False
+
 
 class ChatCompletionResponse(BaseModel):
     id: str

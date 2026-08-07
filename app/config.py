@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # measurements; "cost" is the interesting one to demo.
     routing_strategy: str = "order"
 
+    # Base URL the orchestrator uses to reach the A2A specialist agent. It
+    # points at this service today because the two are co-located, but it is a
+    # setting rather than a constant precisely so the specialist can move to
+    # another host without a code change.
+    self_base_url: str = "http://gateway.local"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -12,9 +12,13 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 
+from agents.specialist_agent import agent_card, handle_task
+from app.a2a import build_error_response, build_task_response, extract_text
 from app.config import MODEL_ALIASES, get_settings
+from app.orchestrator import Orchestrator
 from app.mcp_client import MCPToolbox
 from app.providers.base import ProviderError, ProviderResult
 from app.providers.registry import build_providers
@@ -51,7 +55,18 @@ async def lifespan(app: FastAPI):
     # would pay the initialize + tool-discovery round trip on every message.
     async with MCPToolbox(mcp_app) as toolbox:
         app.state.toolbox = toolbox
-        yield
+
+        # The orchestrator reaches the specialist over HTTP even though both
+        # are served by this process. That is deliberate: the specialist is a
+        # separate agent that happens to be co-located, and moving it to
+        # another host must be a URL change and nothing more.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=settings.self_base_url,
+            timeout=60.0,
+        ) as http_client:
+            app.state.http_client = http_client
+            yield
 
 
 app = FastAPI(
@@ -81,6 +96,124 @@ async def healthz(request: Request) -> dict:
         "observed_latency_ms": router.latency.snapshot(),
         "mcp_tools": [s.name for s in request.app.state.toolbox.specs],
     }
+
+
+# --- A2A: the specialist agent's public surface --------------------------
+
+
+@app.get("/a2a/specialist/.well-known/agent-card.json")
+async def specialist_agent_card(request: Request) -> dict:
+    """A2A discovery. Another agent reads this to decide whether to delegate."""
+    settings = get_settings()
+    return agent_card(settings.self_base_url).to_dict()
+
+
+@app.post("/a2a/specialist")
+async def specialist_endpoint(request: Request) -> dict:
+    """JSON-RPC 2.0 `message/send`.
+
+    Errors are returned as JSON-RPC error objects with HTTP 200, per the
+    JSON-RPC convention — an HTTP error code would mean the *transport* failed,
+    which is a different thing from the method failing.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return build_error_response(None, -32700, "Parse error")
+
+    request_id = body.get("id")
+    method = body.get("method")
+    if method != "message/send":
+        return build_error_response(
+            request_id, -32601, f"Method not found: {method!r}"
+        )
+
+    message = (body.get("params") or {}).get("message") or {}
+    question = extract_text(message)
+    if not question:
+        return build_error_response(
+            request_id, -32602, "Invalid params: message has no text part"
+        )
+
+    try:
+        answer = await handle_task(question, request.app.state.router)
+    except (NoProviderAvailable, ProviderError) as exc:
+        # -32000 is the JSON-RPC reserved range for implementation-defined
+        # server errors, which an upstream model failure is.
+        return build_error_response(request_id, -32000, str(exc))
+
+    return build_task_response(request_id, answer)
+
+
+# --- the orchestrated agent endpoint -------------------------------------
+
+
+@app.post("/v1/agent", response_model=ChatCompletionResponse)
+async def agent(body: ChatCompletionRequest, request: Request) -> ChatCompletionResponse:
+    """Plan -> act -> observe, with tools and A2A delegation.
+
+    Deliberately a separate route from /v1/chat/completions rather than another
+    flag on it: an agent run has different cost, latency, and failure
+    characteristics from a completion, and a caller should have to opt into
+    that explicitly by choosing a different endpoint.
+    """
+    if body.stream:
+        raise HTTPException(status_code=400, detail="Streaming is not implemented.")
+
+    orchestrator = Orchestrator(
+        request.app.state.router,
+        request.app.state.toolbox,
+        specialist_url="/a2a/specialist",
+        http_client=request.app.state.http_client,
+    )
+
+    try:
+        outcome = await orchestrator.run(body)
+    except NoProviderAvailable as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return ChatCompletionResponse(
+        id=f"chatcmpl-{uuid.uuid4().hex}",
+        created=int(time.time()),
+        model=body.model,
+        choices=[
+            Choice(
+                message=ResponseMessage(content=outcome.text), finish_reason="stop"
+            )
+        ],
+        usage=CompletionUsage(
+            prompt_tokens=outcome.usage.input_tokens,
+            completion_tokens=outcome.usage.output_tokens,
+            total_tokens=outcome.usage.total_tokens,
+        ),
+        gateway=GatewayMetadata(
+            provider=outcome.provider or "unknown",
+            upstream_model=outcome.model or body.model,
+            latency_ms=0,
+            routing_strategy=request.app.state.router.strategy,
+            cost_usd=outcome.total_cost_usd,
+            tool_steps=[
+                ToolStepReport(
+                    iteration=s.iteration,
+                    tool=s.tool,
+                    arguments=s.arguments,
+                    result=s.result,
+                    is_error=s.is_error,
+                )
+                for s in outcome.steps
+            ],
+            hit_iteration_cap=outcome.hit_step_cap,
+            # The plan is surfaced so "what was this agent about to do?" is
+            # answerable without server logs — and is where a human approval
+            # gate would sit in a real deployment.
+            plan_goal=outcome.plan.goal,
+            plan_steps=outcome.plan.steps,
+            plan_malformed=outcome.plan.malformed,
+            delegated_to_agent=outcome.delegated,
+        ),
+    )
 
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
