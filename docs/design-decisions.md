@@ -28,3 +28,46 @@ the bottom.
   exists.
 - **Azure CLI not installed.** Blocks nothing before Phase 7; noted so it is
   not discovered late.
+
+## Phase 1 — Core gateway (2026-08-06)
+
+- **Adapters return primitives, not a finished OpenAI envelope.** Envelope
+  assembly (id, timestamp, `object`) is identical for every provider, so doing
+  it once in `main.py` beats duplicating it per adapter. Adapters translate;
+  nothing else.
+- **Usage normalised into a neutral `Usage` dataclass at the adapter boundary.**
+  Anthropic says `input_tokens`/`output_tokens`, OpenAI says
+  `prompt_tokens`/`completion_tokens`. Collapsing that here is what keeps
+  Phase 2's cost tracking, Phase 5's eval, and Phase 6's audit log free of
+  per-vendor branching. This is the load-bearing decision of the phase.
+- **`ProviderError` carries a `retryable` flag, classified by the adapter.**
+  Only the adapter knows what its vendor's exception types mean. Phase 2's
+  fallback keys on this flag — retrying a 400 on another provider is futile,
+  retrying a 429 is the entire point.
+- **`select_candidates()` returns a list even though Phase 1 never uses more
+  than one entry.** Makes Phase 2 a change of sort order inside one function
+  rather than a rewrite of every caller.
+- **Anthropic adapter deliberately drops `temperature`.** Current Claude models
+  return a 400 for `temperature`/`top_p`/`top_k`. The public schema still
+  accepts `temperature` because real OpenAI clients always send one, so the
+  adapter must discard it. The OpenAI adapter forwards it. Sharpest concrete
+  justification for having an adapter layer at all.
+- **Anthropic `max_tokens` defaulted to 4096 when the client omits it.**
+  Mandatory upstream, optional in the OpenAI schema; without a default, valid
+  requests would fail on a technicality.
+- **Text extracted by filtering content blocks on `type == "text"`, not
+  `content[0].text`.** With thinking enabled the first block is often not the
+  text block, so index-zero access is a latent bug.
+- **`stream: true` and `tools` return 400 rather than being ignored.** An
+  accepted-and-ignored flag is a lie in the shape of a feature.
+- **Unknown request fields rejected (`extra="forbid"`) → 422.** A client sending
+  an option we don't honour should learn immediately.
+- **Unknown model → 404; upstream failure → 502.** Routing fails before any
+  network call, so it is not a bad-gateway condition.
+- **Providers registered only when their credential exists.** With only an
+  Anthropic key, a GPT request returns "no provider configured" instead of
+  failing deep inside an SDK on auth.
+- **`/healthz` lists actually-reachable models** rather than a bare `ok`, so a
+  deployment with no keys mounted is visible from the probe.
+- **Router never imports a vendor SDK or branches on `provider.name`.** The
+  moment it does, the adapter contract has failed.
