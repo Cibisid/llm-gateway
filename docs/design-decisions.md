@@ -71,3 +71,49 @@ the bottom.
   deployment with no keys mounted is visible from the probe.
 - **Router never imports a vendor SDK or branches on `provider.name`.** The
   moment it does, the adapter contract has failed.
+
+## Phase 2 — Routing intelligence (2026-08-06)
+
+- **Model aliases (`auto`, `auto-cheap`, `auto-quality`).** Cost-based routing
+  is close to vacuous when the client names a concrete model — the interesting
+  choice is *which model at all*, and the client can only delegate that if it
+  can express intent. Aliases are what make the routing layer worth having.
+- **`Candidate` = (provider, model) pair, not just a provider.** An alias
+  resolves to several models on one provider; a concrete model can resolve to
+  several providers (gpt-4o via OpenAI direct and via Azure). One type covers
+  both, so `route()` never branches on which kind of request it was.
+- **Ranking is the only thing a strategy changes.** `_rank()` is the single
+  seam; execution, fallback, and cost are strategy-independent. Adding a
+  fourth strategy is a new branch there and nothing else.
+- **Unpriced models sort LAST under the cost strategy.** "Unknown price" must
+  never be mistaken for "free", or the cheapest-looking option becomes the one
+  we simply failed to price.
+- **Only verified prices are in the table, each with source and date.** OpenAI
+  and Azure models are deliberately absent and report `cost_usd: null`. A
+  confidently wrong cost is worse than an admitted unknown, because nobody
+  re-checks a plausible-looking number.
+- **Money computed in `Decimal`, rounded to 8dp.** Float error accumulates
+  exactly where a billing dashboard shows it; 4dp would report most Haiku calls
+  as costing zero.
+- **Cost is computed from the concrete model that ran, not the requested one.**
+  An alias has no price.
+- **Fallback only on retryable errors.** A 400 fails identically everywhere, so
+  retrying buys a second guaranteed failure plus its latency and cost. The
+  retryable/non-retryable call is the adapter's, not the router's.
+- **Failed attempts feed the latency tracker too.** A provider that is timing
+  out is slow; the ranking should learn that rather than only sampling successes.
+- **Unmeasured providers rank FIRST under the latency strategy.** Otherwise a
+  provider that was never sampled never gets sampled and the ranking freezes on
+  whichever one was measured first.
+- **Latency EWMA is per-process and in-memory.** Across replicas each instance
+  forms its own estimate. Sharing it would mean Redis or similar — a genuine
+  design decision deliberately left out of scope and documented in the code
+  rather than papered over.
+- **Every attempt is reported in the response**, not just the winner. A fallback
+  that is invisible cannot be debugged when someone asks why a request was slow.
+- **Azure OpenAI advertises its deployment name as the model id.** Azure routes
+  on a customer-chosen deployment name rather than the public model id, so the
+  servable id comes from settings. This is the clearest example of the Provider
+  contract absorbing vendor weirdness the router never sees.
+- **Azure requires all four settings before registering**, and a partial config
+  logs a warning — that combination is a typo, not a deliberate opt-out.

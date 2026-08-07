@@ -48,7 +48,7 @@ async def test_no_providers_configured_produces_an_actionable_message():
     with pytest.raises(NoProviderAvailable) as exc:
         await router.route(request)
 
-    assert "no API keys configured" in str(exc.value)
+    assert "No API keys are configured" in str(exc.value)
 
 
 async def test_provider_errors_propagate_unchanged(simple_request):
@@ -81,14 +81,16 @@ async def test_available_models_deduplicates_across_providers():
     assert Router([a, b]).available_models() == ["only-a", "only-b", "shared"]
 
 
-async def test_select_candidates_returns_a_list_for_phase_2_fallback():
-    """The list shape is load-bearing: Phase 2's fallback depends on it."""
+async def test_select_candidates_returns_a_list_for_fallback():
+    """The list shape is load-bearing: Phase 2's fallback walks it in order."""
     a = FakeProvider("a", ("shared",))
     b = FakeProvider("b", ("shared",))
 
     candidates = Router([a, b]).select_candidates("shared")
 
-    assert [p.name for p in candidates] == ["a", "b"]
+    assert [c.provider.name for c in candidates] == ["a", "b"]
+    # Each candidate pairs a provider with the concrete model it will run.
+    assert all(c.model == "shared" for c in candidates)
 
 
 async def test_usage_totals_are_derived_not_reported():

@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 
-from app.config import get_settings
+from app.config import MODEL_ALIASES, get_settings
 from app.providers.base import ProviderError
 from app.providers.registry import build_providers
 from app.router import NoProviderAvailable, Router
@@ -25,6 +25,7 @@ from app.schemas import (
     CompletionUsage,
     GatewayMetadata,
     ResponseMessage,
+    RoutingAttempt,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,11 @@ async def lifespan(app: FastAPI):
     # pooled HTTP client, and rebuilding them per request would leak sockets.
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
-    app.state.router = Router(build_providers(settings))
+    app.state.router = Router(
+        build_providers(settings),
+        strategy=settings.routing_strategy,
+        aliases=MODEL_ALIASES,
+    )
     yield
 
 
@@ -57,7 +62,15 @@ async def healthz(request: Request) -> dict:
     surfacing on the first real request.
     """
     router: Router = request.app.state.router
-    return {"status": "ok", "available_models": router.available_models()}
+    return {
+        "status": "ok",
+        "available_models": router.available_models(),
+        "available_aliases": router.available_aliases(),
+        "routing_strategy": router.strategy,
+        # Observed per-provider latency the router is currently steering on.
+        # Empty until real traffic has been served.
+        "observed_latency_ms": router.latency.snapshot(),
+    }
 
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
@@ -108,5 +121,12 @@ async def chat_completions(
             provider=decision.provider,
             upstream_model=result.upstream_model,
             latency_ms=decision.latency_ms,
+            routing_strategy=decision.strategy,
+            cost_usd=decision.cost_usd,
+            fallback_occurred=decision.fallback_occurred,
+            attempts=[
+                RoutingAttempt(candidate=a.candidate, ok=a.ok, error=a.error)
+                for a in decision.attempts
+            ],
         ),
     )

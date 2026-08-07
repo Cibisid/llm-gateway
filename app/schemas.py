@@ -72,17 +72,35 @@ class CompletionUsage(BaseModel):
     total_tokens: int
 
 
+class RoutingAttempt(BaseModel):
+    """One candidate the router tried, and whether it worked."""
+
+    candidate: str
+    ok: bool
+    error: str | None = None
+
+
 class GatewayMetadata(BaseModel):
     """Non-standard block describing what the gateway itself did.
 
     Namespaced under one key so it cannot collide with a future OpenAI field.
-    This is what makes routing decisions observable to the caller — Phase 2
-    adds cost here.
+    This is what makes routing observable: which provider served the request,
+    what it cost, whether a fallback was needed, and what failed on the way.
     """
 
     provider: str
     upstream_model: str
     latency_ms: int
+
+    #: Which ranking rule was in force ("order" | "cost" | "latency").
+    routing_strategy: str
+
+    #: Null when the served model has no verified price. See app/pricing.py —
+    #: an unknown cost is reported as unknown rather than guessed at.
+    cost_usd: float | None = None
+
+    fallback_occurred: bool = False
+    attempts: list[RoutingAttempt] = Field(default_factory=list)
 
 
 class ChatCompletionResponse(BaseModel):

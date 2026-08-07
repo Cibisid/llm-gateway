@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # actually reach with the keys available.
     default_model: str = "claude-haiku-4-5"
 
+    # How the router ranks candidates: "order" | "cost" | "latency".
+    # Defaults to "order" because it is predictable and requires no
+    # measurements; "cost" is the interesting one to demo.
+    routing_strategy: str = "order"
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -68,3 +73,33 @@ OPENAI_MODELS: tuple[str, ...] = (
     "gpt-4o",
     "gpt-4o-mini",
 )
+
+# Azure serves OpenAI models through a customer-specific *deployment name*
+# rather than the public model id, so the servable id is read from settings at
+# registration time (see app/providers/registry.py) rather than listed here.
+
+
+# --- Model aliases ---------------------------------------------------------
+#
+# An alias lets a client express intent ("give me something that can answer
+# this") instead of naming a model. The router expands the alias to these
+# concrete candidates and ranks them by the active strategy — which is what
+# makes cost-based routing meaningful rather than decorative. Members are
+# listed cheapest-first so the "order" strategy is also a sensible default.
+#
+# Members that no configured provider can serve are skipped silently, so an
+# alias still works when only some keys are present.
+
+MODEL_ALIASES: dict[str, tuple[str, ...]] = {
+    "auto": (
+        "claude-haiku-4-5",
+        "gpt-4o-mini",
+        "claude-sonnet-5",
+        "gpt-4o",
+        "claude-opus-5",
+    ),
+    # Cheap, fast tier — for classification and extraction rather than reasoning.
+    "auto-cheap": ("claude-haiku-4-5", "gpt-4o-mini"),
+    # Highest-capability tier, cost secondary.
+    "auto-quality": ("claude-opus-5", "gpt-4o", "claude-sonnet-5"),
+}
