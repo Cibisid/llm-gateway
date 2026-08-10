@@ -6,7 +6,10 @@ providers, runs agentic tools over MCP, delegates to a second agent over A2A,
 tracks cost per request, and evaluates its own output quality in CI.
 
 Portfolio project for an AVEVA "AI Software Engineer, Core AI Services" role.
-Owner: Cibisid. Repo: https://github.com/Cibisid/llm-gateway (private).
+Owner: Cibisid. Repo: https://github.com/Cibisid/llm-gateway (**public** since
+10 Aug 2026). Being public raises the bar: any claim in the README or the repo
+description is now visible to strangers, so the honesty rule below is not just
+an internal principle.
 
 ---
 
