@@ -167,6 +167,89 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 curl -s http://127.0.0.1:8000/v1/chat/completions -H "Authorization: Bearer YOUR_GATEWAY_KEY" -H "content-type: application/json" -d "{\"model\":\"auto\",\"use_mcp_tools\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Is pump 3 running too hot, and what does the manual say to do?\"}]}"
 ```
 
+## Use it from the OpenAI SDK
+
+The gateway speaks the OpenAI wire format, so the official `openai` package
+works against it unchanged — only `base_url` and `api_key` differ:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="YOUR_GATEWAY_KEY")
+
+resp = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "In one sentence: what is a centrifugal pump?"}],
+)
+print(resp.choices[0].message.content)
+```
+
+That returns a real `ChatCompletion` object — `resp.model`, `resp.usage`,
+`resp.choices[0].finish_reason` all populated as an OpenAI client expects:
+
+```
+A centrifugal pump uses a rotating impeller to accelerate fluid outward from
+the center, converting rotational energy into pressure and flow.
+```
+
+The difference is what rides along with it. Every response carries a `gateway`
+block recording what actually happened, which no OpenAI-compatible service
+gives you by default:
+
+```json
+{
+  "provider": "anthropic",
+  "upstream_model": "claude-haiku-4-5-20251001",
+  "latency_ms": 1538,
+  "routing_strategy": "order",
+  "cost_usd": 0.000185,
+  "fallback_occurred": false,
+  "attempts": [{"candidate": "anthropic/claude-haiku-4-5", "ok": true, "error": null}]
+}
+```
+
+You asked for `auto`; the router picked Haiku, served it in 1.5 s, and priced
+the call at $0.000185. An unrecognised client ignores the extra block; a client
+that cares reads its own cost off every response.
+
+### The agent, through the same SDK
+
+Set one extra field and the model gets the MCP tools — including the live
+public data sources:
+
+```python
+resp = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "What is the current river level at York?"}],
+    extra_body={"use_mcp_tools": True},
+)
+```
+
+A real answer from a real run, against the live Environment Agency feed:
+
+> The current river levels at York are:
+>
+> **York Foss Barrier (River Ouse):**
+> - Current level: **5.087 mASD** (recorded at 23:15 on 10 Aug 2026)
+> - Typical range: 5.052 to 7.9 mASD
+> - Status: Within normal
+
+The `gateway` block then also carries `tool_steps` — every tool the model
+called, with its arguments and what came back, so the answer can be audited
+rather than trusted:
+
+```json
+"tool_steps": [
+  {"iteration": 1, "tool": "find_river_stations", "arguments": {"place": "York", "limit": 5}},
+  {"iteration": 2, "tool": "get_river_level",     "arguments": {"station_id": "L2404"}},
+  {"iteration": 2, "tool": "get_river_level",     "arguments": {"station_id": "L2406"}}
+]
+```
+
+Note the two calls sharing iteration 2: the model found several York stations
+and fetched them in parallel within one turn, rather than serialising two round
+trips. That request cost $0.0111 in total.
+
 ## Tests and evaluation
 
 ```bash
