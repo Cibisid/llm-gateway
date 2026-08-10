@@ -93,7 +93,7 @@ around it.)
 
 ## What is verified
 
-- All 166 tests pass, including: unauthenticated and wrong-key requests never
+- All 167 tests pass, including: unauthenticated and wrong-key requests never
   reach a provider; malformed `Authorization` headers in four shapes are
   rejected; the service 503s when unconfigured; rate limiting throttles the
   right request and no further provider calls happen; keys never appear in an

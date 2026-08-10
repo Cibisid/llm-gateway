@@ -1,9 +1,47 @@
 # AI Gateway & Agent Platform
 
+[![CI](https://github.com/Cibisid/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Cibisid/llm-gateway/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-167%20passing-brightgreen)](tests/)
+[![Eval](https://img.shields.io/badge/eval-23%2F23%20vs%20live%20model-brightgreen)](eval/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](requirements.txt)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A secure, OpenAI-compatible API service that routes requests across multiple LLM
 providers, runs agentic tools over the Model Context Protocol, delegates to a
 second agent over Agent2Agent, tracks cost per request, and **evaluates its own
 output quality in CI**.
+
+It answers questions using **real live public data** — UK river levels, aviation
+weather, and ECB exchange rates — alongside private mock enterprise data, which
+is the realistic enterprise shape: your own systems plus outside feeds.
+
+## Try it in 60 seconds — no API key, no cost
+
+```bash
+git clone https://github.com/Cibisid/llm-gateway.git
+```
+
+```bash
+cd llm-gateway && python -m venv .venv && pip install -r requirements.txt && python demo.py
+```
+
+Activate the venv first if your shell needs it — `.venv\Scripts\activate` on
+Windows, `source .venv/bin/activate` elsewhere.
+
+`demo.py` walks the full request path with the **model stubbed**, so it runs
+free, offline, and without credentials. Same for the deterministic half of the
+evaluation suite:
+
+```bash
+python -m pytest -q
+```
+
+```bash
+python -m eval.runner --offline
+```
+
+Got an Anthropic key? `python live_demo.py "what's the river level at York?"`
+runs the whole thing against a real model and real live data for a few pence.
 
 ```
                     ┌──────────────────────────────────────────────┐
@@ -33,9 +71,13 @@ output quality in CI**.
         │                              │                         │
 ┌───────▼────────┐          ┌──────────▼─────────┐   ┌───────────▼──────────┐
 │  MCP server    │          │  A2A specialist    │   │  eval/runner.py      │
-│  telemetry     │          │  own prompt        │   │  golden set          │
-│  manuals (RAG) │          │  own model tier    │   │  runs in CI          │
-└────────────────┘          └────────────────────┘   └──────────────────────┘
+│  telemetry·RAG │          │  own prompt        │   │  golden set          │
+│  + LIVE feeds  │          │  own model tier    │   │  runs in CI          │
+└───────┬────────┘          └────────────────────┘   └──────────────────────┘
+        │
+        │  no API key needed
+        ▼
+  Environment Agency (rivers) · NOAA (aviation weather) · ECB (FX rates)
 ```
 
 ## Requirement → where it lives
@@ -47,6 +89,7 @@ output quality in CI**.
 | Tool calling + MCP | MCP server (mcp 2.0.0, 2026-07-28 spec); gateway acts as MCP host/client | [`mcp_server/`](mcp_server/), [`app/mcp_client.py`](app/mcp_client.py) |
 | Agent orchestration | plan → act → observe, with the plan exposed before execution | [`app/orchestrator.py`](app/orchestrator.py) |
 | Agent2Agent (A2A) | Agent card discovery + JSON-RPC `message/send` to a second agent | [`app/a2a.py`](app/a2a.py), [`agents/specialist_agent.py`](agents/specialist_agent.py) |
+| Grounding in real external data | Three live public feeds with failures returned as advice, not exceptions | [`mcp_server/tools/live.py`](mcp_server/tools/live.py) |
 | Automated evaluation of AI outputs | Golden set: tool-call correctness, grounding, similarity, LLM-judge; non-zero exit on regression | [`eval/runner.py`](eval/runner.py) |
 | Securing APIs, auth/authz, data privacy | Bearer auth (fails closed), per-key rate limiting, PII redaction, audit log | [`app/security.py`](app/security.py), [`app/logging_setup.py`](app/logging_setup.py) |
 | Azure PaaS | Container Apps + Key Vault + managed identity, in Bicep | [`infra/main.bicep`](infra/main.bicep) |
@@ -60,22 +103,47 @@ a green checkmark.
 
 | Capability | Status |
 |---|---|
-| Gateway, routing, fallback, cost tracking | **Verified** — 166 tests |
+| Gateway, routing, fallback, cost tracking | **Verified** — 167 tests |
 | MCP server, discovery, tool execution | **Verified** — real protocol round trips in tests |
-| Security: auth, rate limiting, redaction, audit | **Verified** — 166 tests |
+| Security: auth, rate limiting, redaction, audit | **Verified** — 167 tests |
 | Offline evaluation (tools, retrieval) | **Verified** — 9 cases pass |
 | **Anthropic provider against the live API** | **Verified** — real calls to `api.anthropic.com` |
 | **Tool loop, orchestrator, A2A delegation** | **Verified against live Claude**, not just a scripted model |
-| **Full evaluation, all 15 cases** | **Verified** — 15 passed, 0 failed, 0 skipped, $0.13 |
+| **Live public data tools** (rivers, aviation weather, FX) | **Verified** — real calls to the Environment Agency, NOAA, and ECB |
+| **Full evaluation, all 23 cases** | **Verified** — 23 passed, 0 failed, 0 skipped, ~$0.43 |
+| **End-to-end over real HTTP** | **Verified** — 26/26 checks against a running uvicorn server (`verify.py`) |
 | OpenAI / Azure OpenAI providers | **Not verified** — no credentials; mocked tests only |
 | Azure deployment | **Never deployed** — the Bicep is a design artefact, unvalidated against ARM |
+| Local Docker build | **Not verified locally** — Docker Desktop's Linux engine would not start; CI builds the image |
 
 **A2A scope:** agent card discovery and `message/send` only. No streaming, push
 notifications, multi-turn task state, or cancellation. This is not a compliant
 A2A implementation, and the agent card advertises `streaming: false` rather than
 claiming otherwise.
 
-## Quick start
+## Live data — real feeds, no API key required
+
+The agent answers from three live public sources, all free and unauthenticated,
+alongside the private mock enterprise tools. That combination is deliberate:
+real systems answer questions using in-house data *and* outside feeds.
+
+| Tools | Source | What to know |
+|---|---|---|
+| `find_river_stations`, `get_river_level`, `get_flood_warnings` | UK Environment Agency | ~4,500 stations, 15-minute updates. Levels are **mASD** — relative to a per-station datum, **not** a depth of water |
+| `get_airport_weather`, `get_airport_forecast` | NOAA Aviation Weather | **ICAO** codes (`EGLL`), not IATA (`LHR`). Returns raw METAR so the model decodes it |
+| `get_exchange_rates`, `convert_currency`, `get_historical_rate` | ECB via frankfurter.dev | **Daily reference** rates, not live market rates. A non-EUR base is a derived cross-rate |
+
+Those caveats are in the tool descriptions, not just this table — the model is
+told what the numbers mean so it cannot confidently misreport them. Getting the
+ECB attribution right was a bug the evaluation caught, not one anticipated.
+
+Shared plumbing lives in [`mcp_server/tools/live.py`](mcp_server/tools/live.py):
+timeouts, TTL caching, and **every failure returned as data with actionable
+advice rather than raised**. A 404 is distinguished from an outage, because the
+model should react differently to "that station does not exist" than to "the
+service is down".
+
+## Running the full gateway
 
 ```bash
 python -m venv .venv && .venv\Scripts\activate && pip install -r requirements.txt
@@ -109,14 +177,14 @@ python -m pytest -q
 python -m eval.runner
 ```
 
-**Result: 15 passed, 0 failed, 0 skipped — $0.13 in model spend.** Including the
+**Result: 23 passed, 0 failed, 0 skipped — ~$0.43 in model spend.** Including the
 two that matter most: asked about a pump that does not exist, the agent invented
 no reading; asked for a procedure with no manual section, it refused to invent
 one. `--offline` runs the 9 deterministic cases with no key at all.
 
-The evaluation is the part worth looking at. It **found three real retrieval
-bugs that 166 passing unit tests had missed**, because every individual function
-worked correctly:
+The evaluation is the part worth looking at. It **found five real bugs that 167
+passing unit tests had missed**, because every individual function worked
+correctly:
 
 - IDF scored the stopword *"do"* as highly informative (it appeared in exactly
   one section), so *"how **do** I restart a pump"* matched the section saying
@@ -125,9 +193,33 @@ worked correctly:
   ground an answer in an irrelevant section.
 - Set-based scoring made a section *titled* "restart procedure" tie with one
   mentioning restart once in passing — and the tie broke alphabetically.
+- **The LLM judge failed a correct answer** for "using a future date (10 Aug
+  2026)" when it genuinely *was* 10 Aug 2026 — the judge had inferred today's
+  date from its training data. Fixed by injecting the real date into the judge
+  prompt. A judge that is confidently wrong about the world will fail correct
+  answers, and you will not notice unless you read the verdicts.
+- The judge then caught a **genuine factual inaccuracy**: the ECB publishes
+  *euro* reference rates, so a GBP→USD figure is a derived cross-rate, not a
+  published one. The tool's attribution was wrong and is now fixed.
 
-All three are now regression tests. See
+All five are now regression tests. See
 [`docs/phase5-EXPLAINER.md`](docs/phase5-EXPLAINER.md).
+
+### Guardrails that keep the eval honest
+
+An evaluation suite that quietly passes is worse than none, so the harness is
+defended by tests of its own:
+
+- Every online case must carry at least one **decidable** check — a tool call, an
+  argument, a required or forbidden substring. A meta-test enforces it.
+- Exactly one documented exemption exists, and a second test caps how many cases
+  may use it.
+- **Skips report as SKIP, never PASS.**
+- The judge **fails** on an unreachable or unparseable verdict. It never passes
+  by default.
+- Live-data cases assert on the *shape* of a correct answer — right tool, station
+  named, rate dated, refusal to invent — never on values that change every 15
+  minutes.
 
 ## Design decisions worth reading
 
@@ -142,8 +234,21 @@ All three are now regression tests. See
 - **[Why every eval case needs a decidable check](docs/phase5-EXPLAINER.md)** —
   a muted eval is worse than no eval.
 - **[Why the service fails closed](docs/phase6-EXPLAINER.md)**.
+- **[What the container and Bicep do, and what is unvalidated](docs/phase7-EXPLAINER.md)**.
 
 Full log with reasoning: [`docs/design-decisions.md`](docs/design-decisions.md).
+
+### Known limitations, stated plainly
+
+- The **rate limiter and latency tracker are per-process**. Running N replicas
+  multiplies the effective rate limit by N. Redis is the fix; it is documented
+  rather than pretended away.
+- **OpenAI and Azure OpenAI adapters are unproven against live services** — the
+  tests are mocked because there are no credentials.
+- **OpenAI and Azure models are deliberately unpriced** and report
+  `cost_usd: null`. Unpriced sorts *last* under cost ranking, so "unknown price"
+  is never silently treated as "free".
+- The **Bicep template has never been applied.** It is a design artefact.
 
 ## Deploying to Azure
 
@@ -163,10 +268,25 @@ replica count.
 
 ```
 app/            gateway: router, providers, orchestrator, security, MCP client
-mcp_server/     MCP server and its domain tools
+mcp_server/     MCP server, private mock tools, and the live public-data tools
 agents/         the A2A specialist agent
 eval/           golden set, scoring, runner
 infra/          Dockerfile and Bicep
-tests/          166 tests, no network and no API keys required
-docs/           per-phase explainers, decision log, responsible-AI mapping
+tests/          167 tests, no network and no API keys required
+docs/           explainers, decision log, responsible-AI mapping
+
+demo.py         walkthrough of the request path, model STUBBED — free, no key
+live_demo.py    the same path against a real model and real live data (~15p)
+verify.py       26 end-to-end checks against a real running uvicorn server
 ```
+
+## The four files worth reading
+
+If you only read four, read these — they carry the design:
+
+| File | Why |
+|---|---|
+| [`app/providers/base.py`](app/providers/base.py) | The Provider contract. Usage is normalised here, which is the seam that keeps cost tracking, evaluation, and auditing free of per-vendor branching |
+| [`app/router.py`](app/router.py) | Alias → candidates → rank → try → fall back. Never imports a vendor SDK and never branches on provider name |
+| [`app/orchestrator.py`](app/orchestrator.py) | plan → act → observe, with the plan exposed before it executes |
+| [`eval/runner.py`](eval/runner.py) | The golden set and its scoring — the part that caught five real bugs |
