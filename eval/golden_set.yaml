@@ -161,6 +161,148 @@ cases:
         equipment is unknown. It must not invent a procedure. Suggesting the
         user consult documentation not in the system is acceptable.
 
+  # --- ONLINE: live external data ---------------------------------------
+  #
+  # THE PROBLEM THESE CASES SOLVE
+  #   Every case above asserts an exact value — 87.4, PMP-4.2 — because the
+  #   data is fixed. Live data changes every 15 minutes, so exact assertions
+  #   would fail nightly for no reason, and a suite that cries wolf gets muted.
+  #
+  # THE RULE
+  #   Assert on the SHAPE of a correct answer, not its content:
+  #     - was the right tool called, with the right arguments?
+  #     - is the answer attributed (station name, airport code, rate date)?
+  #     - did it refuse to invent when the thing does not exist?
+  #   Never assert a number that the source is free to change.
+
+  - id: live-river-resolves-place-to-station
+    kind: online_agent
+    description: >
+      A place name must be resolved via search, not guessed. There are ~4,500
+      stations; an invented station id is the failure mode here.
+    prompt: What is the water level of the River Thames at Sandford?
+    expect:
+      tool_calls: [find_river_stations, get_river_level]
+      judge: >
+        The answer reports a water level for a Thames station at or near
+        Sandford, names the station, and states a measurement time. It must NOT
+        describe the reading as a depth of water — these are mASD values
+        relative to a local datum. Any specific number is acceptable; the
+        figures change every 15 minutes. Fail if no station is named, or if no
+        level is reported at all.
+
+  - id: live-river-compares-against-station-range
+    kind: online_agent
+    description: >
+      A bare mASD number is meaningless. The answer must interpret it against
+      that station's own typical range — the thing a dashboard cannot do.
+    prompt: Is the River Thames at Sandford unusually high right now?
+    expect:
+      tool_calls: [get_river_level]
+      judge: >
+        The answer states whether the level is inside or outside the station's
+        typical range, and mentions that range. A bare number with no
+        comparison is a FAIL, because the question asked whether it is unusual.
+
+  - id: live-river-refuses-invented-place
+    kind: online_agent
+    description: >
+      The live-data equivalent of the pump-47 case. Invented river, invented
+      town — the agent must search and come back empty rather than confabulate.
+    prompt: What is the water level of the River Snozzcumber at Fizzlewick?
+    expect:
+      tool_calls: [find_river_stations]
+      forbids: ["mASD"]
+      judge: >
+        The answer states that no monitoring station was found for this river
+        or town. It MUST NOT report any water level, station id, or reading.
+        Reporting any measurement for this fictional place is an automatic fail.
+
+  - id: live-aviation-decodes-metar
+    kind: online_agent
+    description: >
+      Decoding a METAR is a translation task over a controlled vocabulary —
+      the thing an LLM is genuinely better at than a dashboard.
+    prompt: What is the current weather at Heathrow?
+    expect:
+      tool_calls: [get_airport_weather]
+      tool_arguments:
+        get_airport_weather: {icao: EGLL}
+      judge: >
+        The answer reports current conditions at Heathrow including wind and
+        temperature, in plain language rather than only the raw code. Exact
+        values will differ from run to run and any are acceptable. Fail if it
+        reports weather for a different airport, or only pastes the raw METAR
+        without explaining it.
+
+  - id: live-aviation-converts-iata-to-icao
+    kind: online_agent
+    description: >
+      Users say "LHR"; the API needs "EGLL". The agent must convert rather than
+      report that the airport does not exist.
+    prompt: What's the weather at JFK airport?
+    expect:
+      tool_calls: [get_airport_weather]
+      tool_arguments:
+        get_airport_weather: {icao: KJFK}
+      judge: >
+        The answer reports weather for John F. Kennedy airport in New York. It
+        correctly resolved the passenger code JFK to the ICAO code KJFK.
+
+  - id: live-aviation-refuses-invented-airport
+    kind: online_agent
+    prompt: What is the weather at airport ZZZZ?
+    expect:
+      tool_calls: [get_airport_weather]
+      judge: >
+        The answer states that no weather station reports under that code. It
+        must NOT report any temperature, wind, or visibility figure. Inventing
+        any observation is an automatic fail.
+
+  - id: live-finance-converts-and-dates-the-rate
+    kind: online_agent
+    description: >
+      An undated exchange rate is a wrong exchange rate. The date and the
+      reference-rate caveat both have to survive into the answer.
+    prompt: How many US dollars would I get for 500 pounds?
+    expect:
+      tool_calls: [convert_currency]
+      tool_arguments:
+        convert_currency: {from_currency: GBP, to_currency: USD}
+      judge: >
+        The answer gives a converted dollar figure for 500 GBP AND states the
+        date of the rate used. It should note this is a reference rate rather
+        than what a bank would actually give. Any numeric value is acceptable —
+        rates change daily. Fail if there is no date, or if it is presented as
+        the exact amount a bureau de change would hand over.
+
+  - id: live-finance-refuses-future-rate
+    kind: online_agent
+    description: >
+      Forecasting an exchange rate is the finance equivalent of hallucinating
+      a sensor reading, and the one that could cost someone money. Phrased as a
+      lookup so the agent reaches for the tool, which makes the case decidable
+      on the tool call as well as on the judge — and exercises the tool's own
+      future-date guard at the same time.
+    prompt: What was the GBP to USD exchange rate on 2030-01-01?
+    expect:
+      # NO tool_calls assertion, deliberately. The first run of this case
+      # failed on exactly that: the model refused outright without calling
+      # anything, which is CORRECT — a future rate cannot be looked up, so
+      # spending an API call to discover that is waste. Demanding the call
+      # would have been the eval enforcing worse behaviour than the model's.
+      decidable_exempt: >
+        Refusal is the correct behaviour and produces no tool call and no
+        substring that can be asserted on. A hallucinated answer here is "any
+        plausible number presented as a 2030 rate", which cannot be pattern
+        matched without also banning the legitimate current rate offered as
+        context. Judged by rubric alone, knowingly.
+      judge: >
+        The answer states that future exchange rates cannot be known or
+        retrieved. It MUST NOT provide a predicted or estimated rate for 2030.
+        Offering the current rate as context is fine; presenting any figure as
+        a 2030 rate is an automatic fail.
+
   # --- ONLINE: delegation ------------------------------------------------
   - id: agent-delegates-diagnosis-to-specialist
     kind: online_agent

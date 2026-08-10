@@ -54,7 +54,13 @@ def test_golden_set_parses_and_every_case_is_complete():
 def test_every_online_case_has_at_least_one_decidable_check():
     """The core anti-flake rule: a case anchored ONLY on a judge or a similarity
     score can fail on a model's mood. Every case must have something
-    deterministic to stand on."""
+    deterministic to stand on.
+
+    A case may opt out via `decidable_exempt`, but only with a written reason —
+    which forces the exemption to be an argued decision in review rather than a
+    quiet omission. Currently exactly one case uses it: refusing to predict a
+    future exchange rate produces no tool call and no assertable substring.
+    """
     spec = yaml.safe_load(GOLDEN_SET.read_text(encoding="utf-8"))
     decidable = {"tool_calls", "tool_arguments", "contains", "forbids", "delegates"}
 
@@ -62,9 +68,25 @@ def test_every_online_case_has_at_least_one_decidable_check():
         if case["kind"] != "online_agent":
             continue
         keys = set(case["expect"])
-        assert keys & decidable, (
-            f"{case['id']} relies only on fuzzy checks {keys}"
+        if keys & decidable:
+            continue
+        reason = case["expect"].get("decidable_exempt", "")
+        assert len(reason.strip()) > 40, (
+            f"{case['id']} relies only on fuzzy checks {keys} and gives no "
+            "substantive decidable_exempt reason"
         )
+
+
+def test_exemptions_stay_rare():
+    """An escape hatch that everything uses is not an escape hatch."""
+    spec = yaml.safe_load(GOLDEN_SET.read_text(encoding="utf-8"))
+    online = [c for c in spec["cases"] if c["kind"] == "online_agent"]
+    exempt = [c for c in online if "decidable_exempt" in c["expect"]]
+
+    assert len(exempt) <= 2, (
+        f"{len(exempt)} cases skip the decidable-check rule — the rule is "
+        "eroding. Find real assertions or reconsider the cases."
+    )
 
 
 # --- deterministic scoring -------------------------------------------------

@@ -99,11 +99,27 @@ def test_manual_search_respects_max_results():
 # --- the MCP client (real protocol round trip) -----------------------------
 
 
+#: Private, mock enterprise data — no network.
+PRIVATE_TOOLS = {"get_telemetry", "search_manuals", "list_assets"}
+#: Live public APIs. Named here so adding one is a deliberate, visible change
+#: rather than something that silently widens the agent's reach.
+LIVE_TOOLS = {
+    "find_river_stations",
+    "get_river_level",
+    "get_flood_warnings",
+    "get_airport_weather",
+    "get_airport_forecast",
+    "get_exchange_rates",
+    "convert_currency",
+    "get_historical_rate",
+}
+
+
 async def test_toolbox_discovers_the_servers_tools_over_mcp():
     async with MCPToolbox(mcp_app) as toolbox:
         names = {spec.name for spec in toolbox.specs}
 
-    assert names == {"get_telemetry", "search_manuals", "list_assets"}
+    assert names == PRIVATE_TOOLS | LIVE_TOOLS
 
 
 async def test_discovered_tools_carry_schema_and_description():
@@ -196,11 +212,7 @@ async def test_loop_offers_the_discovered_tools_to_the_model():
     async with MCPToolbox(mcp_app) as toolbox:
         await run_tool_loop(_request(), router, toolbox)
 
-    assert {t.name for t in provider.tools_seen[0]} == {
-        "get_telemetry",
-        "search_manuals",
-        "list_assets",
-    }
+    assert {t.name for t in provider.tools_seen[0]} == PRIVATE_TOOLS | LIVE_TOOLS
 
 
 async def test_loop_echoes_the_tool_call_back_before_its_result():

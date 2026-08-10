@@ -17,6 +17,9 @@ from __future__ import annotations
 
 from mcp.server import MCPServer
 
+from mcp_server.tools import aviation as _aviation
+from mcp_server.tools import markets as _markets
+from mcp_server.tools import rivers as _rivers
 from mcp_server.tools.manuals import search_manuals as _search_manuals
 from mcp_server.tools.telemetry import get_telemetry as _get_telemetry
 from mcp_server.tools.telemetry import list_asset_ids
@@ -63,6 +66,129 @@ def list_assets() -> dict:
     guessing.
     """
     return {"assets": list_asset_ids()}
+
+
+# --- live public data ------------------------------------------------------
+#
+# Everything above this line is private, mock enterprise data. Everything below
+# calls a real external API. They sit side by side deliberately: it is the
+# combination — your own equipment data plus live public feeds — that a gateway
+# is for, and it shows the tool layer is not hardcoded to one domain.
+
+
+@server.tool()
+def find_river_stations(place: str, limit: int = 5) -> dict:
+    """Find UK river-level monitoring stations by town, river, or station name.
+
+    Call this FIRST when someone asks about a river or flooding somewhere, to
+    turn a place name into a station id. There are around 4,500 stations, so
+    never guess an id.
+
+    Args:
+        place: A town, river, or station name, e.g. "Oxford" or "River Thames".
+        limit: Maximum stations to return (1-20).
+    """
+    return _rivers.find_stations(place, limit)
+
+
+@server.tool()
+def get_river_level(station_id: str) -> dict:
+    """Get the live water level at one monitoring station.
+
+    Levels are in mASD — metres above a zero point unique to each station — so
+    a bare number means nothing. Always compare against the typical range
+    returned with the reading, and never describe the value as a depth of
+    water.
+
+    Args:
+        station_id: A station id from find_river_stations, e.g. "1029TH".
+    """
+    return _rivers.get_river_level(station_id)
+
+
+@server.tool()
+def get_flood_warnings(county: str = "") -> dict:
+    """Get flood warnings and alerts currently in force in England.
+
+    Call this for any question about whether somewhere is flooding or at risk.
+    An empty result means no warnings are in force — say so plainly.
+
+    Args:
+        county: Optional county to filter by. Empty returns all of England.
+    """
+    return _rivers.get_flood_warnings(county)
+
+
+@server.tool()
+def get_airport_weather(icao: str) -> dict:
+    """Get current observed weather (METAR) at an airport.
+
+    Takes a 4-letter ICAO code (EGLL, KJFK), not the 3-letter code passengers
+    use (LHR, JFK). If the user gives a passenger code, convert it first and
+    say which airport you used.
+
+    Args:
+        icao: 4-letter ICAO airport code.
+    """
+    return _aviation.get_airport_weather(icao)
+
+
+@server.tool()
+def get_airport_forecast(icao: str) -> dict:
+    """Get the aerodrome forecast (TAF) for an airport.
+
+    Use alongside get_airport_weather when someone asks what the weather will
+    do, rather than what it is doing now. Smaller airports may have no TAF.
+
+    Args:
+        icao: 4-letter ICAO airport code.
+    """
+    return _aviation.get_airport_forecast(icao)
+
+
+@server.tool()
+def get_exchange_rates(base_currency: str = "GBP", symbols: str = "") -> dict:
+    """Get today's official ECB reference exchange rates.
+
+    These are daily published reference rates, not live market rates and not
+    what a bank would quote. Always state the rate date in your answer.
+
+    Args:
+        base_currency: Currency to price against, e.g. "GBP".
+        symbols: Optional comma-separated codes to limit results, e.g. "USD,EUR".
+    """
+    return _markets.get_exchange_rates(base_currency, symbols)
+
+
+@server.tool()
+def convert_currency(amount: float, from_currency: str, to_currency: str) -> dict:
+    """Convert an amount between currencies at the ECB reference rate.
+
+    Report the result as a reference calculation. A real transaction differs
+    because banks apply a spread and fees. Never advise whether or when to
+    convert.
+
+    Args:
+        amount: How much to convert.
+        from_currency: Source currency code, e.g. "GBP".
+        to_currency: Target currency code, e.g. "USD".
+    """
+    return _markets.convert_currency(amount, from_currency, to_currency)
+
+
+@server.tool()
+def get_historical_rate(rate_date: str, base_currency: str, target_currency: str) -> dict:
+    """Get the ECB reference rate between two currencies on a past date.
+
+    The ECB publishes only on working days, so a weekend date returns the
+    preceding working day — say so when that happens. Future dates are refused.
+
+    Args:
+        rate_date: The date, as YYYY-MM-DD.
+        base_currency: Source currency code.
+        target_currency: Target currency code.
+    """
+    return _markets.get_historical_rate(rate_date, base_currency, target_currency)
 
 
 if __name__ == "__main__":
